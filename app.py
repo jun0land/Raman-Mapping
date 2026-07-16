@@ -1,0 +1,1343 @@
+"""Raman Mapping Studio — Streamlit UI (Stage 3).
+
+라만 매핑 측정 결과를 업로드 → 전처리 → 매핑 값 추출 → 방향 정렬(실시간
+미리보기) → 히트맵 서식 → 스펙트럼 뷰어 → Export/프리셋/배치 처리까지
+수행하는 웹 앱. 무거운 연산은 core/*.py 순수 함수에 위임하고, 파일 로드·전처리
+결과는 @st.cache_data로 캐싱한다. 원본 데이터는 세션 내내 불변.
+
+2D 매핑 전용 (z축/depth/3D 없음).
+"""
+
+from __future__ import annotations
+
+import base64
+import io
+import json
+import os
+import zipfile
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
+
+from core import loader, preprocess, extract, grid, plot
+
+
+def section(label: str, description: str = "") -> None:
+    """섹션 헤더 — st.subheader(divider="orange") + caption.
+
+    (streamlit-extras의 deprecated colored_header 대체. divider 색 orange는
+    테마 accent #ed542b 와 시각적으로 일치.)
+    """
+    st.subheader(label, divider="orange")
+    if description:
+        st.caption(description)
+
+
+# ===========================================================================
+# 0. 상수 / 기본값
+# ===========================================================================
+APP_DIR = Path(__file__).resolve().parent
+PRESET_DIR = APP_DIR / "presets"
+PRESET_DIR.mkdir(exist_ok=True)
+
+ACCENT = "#ed542b"
+COLORMAPS = ["jet", "viridis", "plasma", "inferno", "rainbow", "gray", "RdBu"]
+MODES = ["single", "peak_max", "peak_area", "peak_position", "fwhm", "ratio"]
+MODE_LABELS = {
+    "single": "Single intensity (단일 파수)",
+    "peak_max": "Peak max (구간 최대)",
+    "peak_area": "Peak area (구간 적분)",
+    "peak_position": "Peak position (피크 위치)",
+    "fwhm": "FWHM (반치폭)",
+    "ratio": "Ratio (구간 A/B 비율)",
+}
+SCANS = ["raster", "snake"]
+STARTS = ["top-left", "bottom-left", "top-right", "bottom-right"]
+OPS = ["flip_v", "flip_h", "rotate_cw", "rotate_ccw", "transpose"]
+OP_LABELS = {
+    "flip_v": "상하 반전 (flip vertical)",
+    "flip_h": "좌우 반전 (flip horizontal)",
+    "rotate_cw": "시계방향 90° 회전",
+    "rotate_ccw": "반시계방향 90° 회전",
+    "transpose": "전치 (transpose)",
+}
+FONTS = ["Arial", "Myriad Pro", "Times New Roman", "Pretendard", "Calibri",
+         "Helvetica", "Nanum Gothic"]
+
+# 세션 기본값 (모든 위젯 key를 여기서 초기화 → 프리셋/최상단 파이프라인이 안전하게 읽음)
+DEFAULTS = {
+    "nx": 20, "ny": 20,
+    # 전처리
+    "pp_cosmic": False, "pp_cosmic_thr": 5.0, "pp_cosmic_win": 5,
+    "pp_baseline": "off", "pp_als_lam": 100000.0, "pp_als_p": 0.01,
+    "pp_als_niter": 10, "pp_poly_order": 3,
+    "pp_smooth": False, "pp_smooth_win": 11, "pp_smooth_poly": 3,
+    "pp_norm": "off", "pp_norm_peak": 1580.0,
+    # 추출
+    "ex_mode": "peak_max",
+    "ex_wave": 1580.0,
+    "ex_w1": 1300.0, "ex_w2": 1400.0,
+    "ex_a1": 1300.0, "ex_a2": 1400.0, "ex_b1": 1550.0, "ex_b2": 1650.0,
+    "ex_metric": "max",
+    # 방향
+    "or_scan": "raster", "or_start": "top-left",
+    "op_flip_v": False, "op_flip_h": False,
+    "op_rotate_cw": False, "op_rotate_ccw": False, "op_transpose": False,
+    # 서식
+    "fmt_cmap": "jet", "fmt_zmin": 0.0, "fmt_zmax": 1.0, "fmt_zauto": True,
+    "fmt_xlabel": "X (μm)", "fmt_ylabel": "Y (μm)", "fmt_title": "",
+    "fmt_stepx": 1.0, "fmt_stepy": 1.0,
+    "fmt_showticks": True, "fmt_tickspacing": 0.0,
+    "fmt_cbarlabel": "Intensity (a.u.)", "fmt_cbarticks": 5,
+    "fmt_font": "Arial", "fmt_fs_label": 14, "fmt_fs_tick": 12, "fmt_fs_title": 16,
+    "fmt_interp": "none", "fmt_aspect": True,
+    # export
+    "exp_dpi": 300,
+    # 스펙트럼 뷰어 선택 픽셀
+    "sv_row": 0, "sv_col": 0,
+    # 시각화 보기 방식 (2D 히트맵 / 3D 표면)
+    "view_mode": "2D 히트맵",
+    # 3D 표면 카메라 (구면 좌표 → export 각도 동기화)
+    "cam_azim": -45.0, "cam_elev": 25.0, "cam_zoom": 2.2,
+}
+
+
+def init_state():
+    for k, v in DEFAULTS.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+# ===========================================================================
+# 1. 페이지 설정 + Liquid Glass CSS
+# ===========================================================================
+st.set_page_config(page_title="Raman Mapping Studio", layout="wide",
+                   page_icon="🔬")
+init_state()
+
+
+def get_base64_of_bin_file(path) -> str:
+    """바이너리 파일을 base64 문자열로. 파일이 없으면 '' 반환(우아한 처리)."""
+    try:
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    except Exception:
+        return ""
+
+
+_BG_B64 = get_base64_of_bin_file(APP_DIR / "liquid_bg.png")
+_LOGO_B64 = get_base64_of_bin_file(APP_DIR / "logo.png")
+
+_bg_layer = (
+    f"linear-gradient(rgba(255,255,255,0.72), rgba(255,255,255,0.82)), "
+    f"url('data:image/png;base64,{_BG_B64}')"
+    if _BG_B64 else
+    "linear-gradient(135deg, #fdf0ec 0%, #f7f7fb 100%)"
+)
+
+custom_css = f"""
+<style>
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
+
+html, body, [class*="css"], .stApp, button, input, textarea, select {{
+    font-family: 'Myriad Pro', 'Pretendard', 'Nanum Gothic', -apple-system, sans-serif !important;
+}}
+
+.stApp {{
+    background: {_bg_layer};
+    background-size: cover;
+    background-attachment: fixed;
+    background-position: center;
+}}
+
+/* 컨테이너 투명화 */
+[data-testid="stHeader"], [data-testid="stToolbar"] {{ background: transparent !important; }}
+[data-testid="stAppViewContainer"], .main .block-container {{ background: transparent !important; }}
+
+/* Glassmorphism */
+[data-testid="stForm"],
+[data-testid="stExpander"],
+[data-testid="stVerticalBlockBorderWrapper"],
+.title-glass-container {{
+    background: rgba(255,255,255,0.15);
+    backdrop-filter: blur(48px) saturate(150%);
+    -webkit-backdrop-filter: blur(48px) saturate(150%);
+    border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 20px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.05);
+    padding: 24px;
+}}
+
+/* 사이드바 글래스 */
+[data-testid="stSidebar"] > div:first-child {{
+    background: rgba(255,255,255,0.28);
+    backdrop-filter: blur(40px) saturate(150%);
+    -webkit-backdrop-filter: blur(40px) saturate(150%);
+}}
+
+/* 타이틀 헤더 */
+.title-glass-container {{
+    display: flex; align-items: center; gap: 18px;
+    border-left: 6px solid {ACCENT};
+    margin-bottom: 18px;
+}}
+.title-glass-container img {{ height: 52px; width: auto; }}
+.title-glass-container h2 {{
+    margin: 0; font-weight: 800; color: #1c1c1e; text-shadow: none;
+    letter-spacing: -0.5px;
+}}
+.title-glass-container .subtitle {{ color: #6b6b70; font-size: 0.92rem; }}
+
+/* 탭 — 배경 하이라이트 제거(모든 상태 투명), 선택 표시는 텍스트색+밑줄만 */
+.stTabs [data-baseweb="tab-list"] {{
+    background: transparent !important;
+    gap: 6px;
+}}
+.stTabs [data-baseweb="tab"],
+.stTabs [data-baseweb="tab"]:hover,
+.stTabs [data-baseweb="tab"]:active,
+.stTabs [data-baseweb="tab"]:focus,
+.stTabs [data-baseweb="tab"][aria-selected="true"] {{
+    background: transparent !important;
+    background-color: transparent !important;
+    border-radius: 12px 12px 0 0; padding: 8px 20px; font-weight: 600;
+}}
+/* 내부 하이라이트 요소까지 투명 처리 */
+.stTabs [data-baseweb="tab"] > div,
+.stTabs [data-baseweb="tab"] [data-baseweb="tab-highlight"],
+.stTabs [data-baseweb="tab-highlight"] {{
+    background: transparent !important;
+    background-color: transparent !important;
+}}
+.stTabs [aria-selected="true"] {{
+    color: {ACCENT} !important;
+    border-bottom: 3px solid {ACCENT} !important;
+}}
+
+/* 파일 업로더 */
+[data-testid="stFileUploader"] section {{
+    background: rgba(255,255,255,0.25);
+    border: 2px dashed {ACCENT};
+    border-radius: 16px;
+}}
+
+/* 입력/셀렉트 글래스 */
+[data-baseweb="select"] > div, .stNumberInput input, .stTextInput input {{
+    background: rgba(255,255,255,0.35) !important;
+    border-radius: 10px !important;
+}}
+
+/* 버튼 */
+.stButton > button, .stDownloadButton > button {{
+    background: rgba(255,255,255,0.35);
+    border: 1px solid rgba(255,255,255,0.5);
+    border-radius: 12px; font-weight: 600; color: #1c1c1e;
+    transition: all 0.18s ease;
+}}
+.stButton > button:hover, .stDownloadButton > button:hover {{
+    transform: translateY(-2px);
+    border-color: {ACCENT}; color: {ACCENT};
+    box-shadow: 0 6px 18px rgba(237,84,43,0.18);
+}}
+.stButton > button[kind="primary"], .stDownloadButton > button[kind="primary"] {{
+    background: linear-gradient(135deg, {ACCENT}, #f68b21);
+    color: white; border: none;
+}}
+.stButton > button[kind="primary"]:hover {{ color: white; opacity: 0.94; }}
+
+/* metric 카드 */
+[data-testid="stMetric"] {{
+    background: rgba(255,255,255,0.30);
+    border-radius: 14px; padding: 12px 16px;
+    border: 1px solid rgba(255,255,255,0.4);
+}}
+
+h1, h2, h3, h4, p, label, span {{ text-shadow: none; }}
+</style>
+"""
+st.markdown(custom_css, unsafe_allow_html=True)
+
+
+# ===========================================================================
+# 1.5 사용 설명서 슬라이드-인 패널 (self-contained JS 오버레이)
+# ===========================================================================
+# Streamlit 의 st.markdown 은 <script> 를 제거하므로, 전체 화면 오버레이(북마크 탭·
+# 딤 배경·슬라이드 패널)는 components.html(iframe) 안의 JS 가 window.parent.document
+# 에 직접 주입해 만든다. localhost 는 same-origin 이라 parent 접근이 가능하지만 모든
+# parent 접근은 try/catch 로 감싼다(호스팅 환경이 cross-origin 이면 조용히 무시됨).
+# 슬라이드 애니메이션은 순수 CSS transition(transform)으로 처리(파이썬 왕복 없음).
+# 열림 상태는 window.parent.__nbedlManualOpen 플래그로 rerun 사이에 유지한다.
+_MANUAL_HTML = r"""
+<script>
+(function () {
+  try {
+    var pwin = window.parent;
+    var pdoc = pwin.document;
+    if (!pdoc || !pdoc.body) return;
+
+    // --- rerun 마다 REMOVE 후 RE-CREATE. 지우기 전에 현재 열림 상태를 읽어 복원 ---
+    var wasOpen = false;
+    var prevRoot = pdoc.getElementById('nbedl-manual-root');
+    if (prevRoot) wasOpen = prevRoot.classList.contains('open');
+    if (typeof pwin.__nbedlManualOpen === 'boolean') wasOpen = pwin.__nbedlManualOpen;
+
+    var oldStyle = pdoc.getElementById('nbedl-manual-style');
+    if (oldStyle) oldStyle.remove();
+    if (prevRoot) prevRoot.remove();
+
+    // --- 스타일 ---
+    var style = pdoc.createElement('style');
+    style.id = 'nbedl-manual-style';
+    style.textContent = `
+      #nbedl-manual-root, #nbedl-manual-root * { box-sizing: border-box;
+        font-family: 'Pretendard', -apple-system, 'Nanum Gothic', sans-serif; }
+      #nbedl-manual-tab {
+        position: fixed; top: 40%; right: 0; z-index: 2147483000;
+        writing-mode: vertical-rl; text-orientation: mixed;
+        background: linear-gradient(160deg, #ed542b, #f68b21);
+        color: #fff; font-weight: 700; letter-spacing: 2px; font-size: 15px;
+        padding: 20px 11px; border-radius: 14px 0 0 14px; cursor: pointer;
+        box-shadow: -4px 4px 18px rgba(0,0,0,0.20); user-select: none;
+        transition: padding-right .2s ease, box-shadow .2s ease; }
+      #nbedl-manual-tab:hover {
+        padding-right: 15px; box-shadow: -6px 6px 22px rgba(237,84,43,0.35); }
+      #nbedl-manual-backdrop {
+        position: fixed; inset: 0; z-index: 2147483100;
+        background: rgba(20,20,28,0.34);
+        backdrop-filter: blur(6px) saturate(120%);
+        -webkit-backdrop-filter: blur(6px) saturate(120%);
+        opacity: 0; pointer-events: none; transition: opacity .38s ease; }
+      #nbedl-manual-panel {
+        position: fixed; top: 0; right: 0; height: 100vh; z-index: 2147483200;
+        width: min(460px, 92vw);
+        background: rgba(255,255,255,0.94);
+        backdrop-filter: blur(26px) saturate(160%);
+        -webkit-backdrop-filter: blur(26px) saturate(160%);
+        border-left: 6px solid #ed542b;
+        box-shadow: -14px 0 44px rgba(0,0,0,0.24);
+        transform: translateX(105%);
+        transition: transform .38s cubic-bezier(.22,.61,.36,1);
+        overflow-y: auto; padding: 24px 26px 64px; color: #23252a; }
+      #nbedl-manual-root.open #nbedl-manual-panel { transform: translateX(0); }
+      #nbedl-manual-root.open #nbedl-manual-backdrop { opacity: 1; pointer-events: auto; }
+      #nbedl-manual-close {
+        position: absolute; top: 16px; right: 18px; width: 34px; height: 34px;
+        border: none; border-radius: 50%; cursor: pointer; font-size: 17px;
+        background: rgba(237,84,43,0.12); color: #ed542b; line-height: 1;
+        transition: background .18s ease; }
+      #nbedl-manual-close:hover { background: rgba(237,84,43,0.24); }
+      #nbedl-manual-panel h3 { color: #ed542b; margin: 4px 40px 4px 0;
+        font-size: 1.18rem; font-weight: 800; }
+      #nbedl-manual-panel h4 { color: #ed542b; margin: 18px 0 5px;
+        font-size: 1.0rem; font-weight: 700; }
+      #nbedl-manual-panel p { margin: 4px 0; font-size: .9rem; line-height: 1.55; }
+      #nbedl-manual-panel .nbedl-sub { color: #6b6b70; font-size: .86rem;
+        margin-bottom: 6px; }
+      #nbedl-manual-panel b { color: #c8431f; font-weight: 700; }
+      #nbedl-manual-panel .nbedl-note {
+        background: rgba(255,244,235,0.85); border-left: 4px solid #f68b21;
+        border-radius: 8px; padding: 12px 14px 4px; margin-top: 20px; }
+      #nbedl-manual-panel .nbedl-note b { color: #ed542b; }
+      #nbedl-manual-panel .nbedl-note ul { margin: 8px 0 8px; padding-left: 18px; }
+      #nbedl-manual-panel .nbedl-note li { font-size: .87rem; line-height: 1.5;
+        margin-bottom: 5px; }
+    `;
+    pdoc.head.appendChild(style);
+
+    // --- 루트(탭 + 배경 + 패널) ---
+    var root = pdoc.createElement('div');
+    root.id = 'nbedl-manual-root';
+    root.innerHTML = `
+      <div id="nbedl-manual-tab">📖 사용 설명서</div>
+      <div id="nbedl-manual-backdrop"></div>
+      <div id="nbedl-manual-panel">
+        <button id="nbedl-manual-close" aria-label="닫기">✕</button>
+        <h3>📖 Raman Mapping Studio · 사용 설명서</h3>
+        <p class="nbedl-sub">아래 순서대로 따라 하면 측정 파일에서 논문·보고서용 매핑 이미지까지 만들 수 있습니다.</p>
+
+        <h4>STEP 1 · 파일 업로드</h4>
+        <p>왼쪽 사이드바 <b>⚙️ 전역 설정</b>에서 <b>.xlsx / .csv / .txt(.tsv)</b> 파일을 올립니다. 포맷은 자동 감지됩니다.</p>
+
+        <h4>STEP 2 · 그리드 nx · ny 설정</h4>
+        <p><b>nx(열) × ny(행)</b>이 측정 포인트 수와 정확히 일치해야 합니다. 안 맞으면 상단에 친절한 안내 에러가 뜨니 값을 조정하세요. <b>① 데이터 정보</b>의 포인트 수·메타 힌트를 참고하세요.</p>
+
+        <h4>STEP 3 · 전처리 (선택 · 탭 ②)</h4>
+        <p>cosmic ray 제거 · baseline(off / ALS / poly) · Savitzky–Golay 평활 · normalize 토글. <b>ALS는 400 스펙트럼 기준 약 4초</b>로 가장 무겁습니다. 빠른 작업엔 off·poly 권장, 동일 설정은 캐시로 즉시 반영됩니다.</p>
+
+        <h4>STEP 4 · 매핑 값 추출 (③)</h4>
+        <p>single · peak_max · peak_area · peak_position · fwhm · ratio 중 선택하고 해당 <b>파수(cm⁻¹) 구간</b>을 입력합니다. ratio는 A(분자)·B(분모) 두 구간을 지정합니다.</p>
+
+        <h4>STEP 5 · 방향 정렬 ⭐ (④)</h4>
+        <p>scan(raster / snake) · 시작 코너 · flip / rotate / transpose를 <b>optic 이미지와 비교하며</b> 맞춥니다. 아래 최종 뷰에 실시간 미리보기로 반영되니 눈으로 확인하며 조정하세요. <b>추측하지 말고</b> 실제 이미지와 대조합니다.</p>
+
+        <h4>STEP 6 · 히트맵 서식 (⑤)</h4>
+        <p>colormap · z-range(자동 2–98%) · 축 라벨과 μm step · colorbar · 폰트(Myriad Pro 등) · 보간 · 1:1 종횡비. 서식 변경은 무거운 재계산 없이 즉시 반영됩니다.</p>
+
+        <h4>STEP 7 · 2D / 3D 뷰 + 카메라</h4>
+        <p>보기 방식에서 2D 히트맵 ↔ 3D 표면을 전환. 3D는 <b>방위각 · 고도 · 줌</b> 슬라이더로 각도를 잡습니다. 마우스 드래그는 자유 관찰용이며, <b>Export 각도는 슬라이더·프리셋 값</b>이 기준입니다.</p>
+
+        <h4>STEP 8 · 스펙트럼 뷰어 (⑥)</h4>
+        <p>히트맵 픽셀을 <b>클릭</b>하거나 X / Y를 입력하면 그 지점의 <b>원본 스펙트럼(전처리 전)</b>을 확인해 QC할 수 있습니다.</p>
+
+        <h4>STEP 9 · Export</h4>
+        <p>사이드바 💾 Export: <b>PNG(투명) / JPG(흰 배경) / SVG / PDF</b> 이미지, <b>CSV · XLSX 매트릭스</b>(Origin에 그대로 붙여넣기), <b>설정 JSON</b>. 화면의 Plotly 뷰를 그대로 저장합니다.</p>
+
+        <h4>STEP 10 · 프리셋 저장 · 불러오기</h4>
+        <p>장비별 방향·서식 조합을 이름 붙여 저장하고 재사용하세요(예: WITec_100x). Reset으로 전체 초기화할 수 있습니다.</p>
+
+        <h4>STEP 11 · 배치 처리 (탭 📦)</h4>
+        <p>여러 파일에 현재 설정을 일괄 적용 → 파일당 <b>2D PNG + 3D PNG + CSV</b>를 ZIP으로 받습니다. nx · ny가 맞는 파일만 처리됩니다.</p>
+
+        <div class="nbedl-note">
+          <b>⚠️ 주의사항 & 팁</b>
+          <ul>
+            <li><b>원본 데이터는 불변</b> — 모든 전처리·변환은 사본에만 적용됩니다.</li>
+            <li><b>ALS는 무겁습니다</b> — 필요할 때만 사용하고 캐시를 활용하세요.</li>
+            <li><b>방향은 자동 판별 불가</b> — 장비마다 스캔 방식이 달라 optic 이미지로 직접 맞춰야 합니다.</li>
+            <li><b>nx · ny 정합성</b>이 안 맞으면 매핑이 생성되지 않습니다.</li>
+            <li>서식 · 카메라 조정은 <b>무거운 재계산 없이 즉시</b> 반영됩니다.</li>
+          </ul>
+        </div>
+      </div>`;
+    pdoc.body.appendChild(root);
+
+    // --- 열기/닫기 (CSS transition 이 슬라이드 담당) ---
+    function setOpen(o) {
+      pwin.__nbedlManualOpen = o;
+      if (o) root.classList.add('open'); else root.classList.remove('open');
+    }
+    // rerun 직후 복원: class 를 즉시 부여하므로 열려 있던 상태가 그대로 유지됨
+    setOpen(wasOpen);
+
+    root.querySelector('#nbedl-manual-tab')
+        .addEventListener('click', function () { setOpen(true); });
+    root.querySelector('#nbedl-manual-close')
+        .addEventListener('click', function () { setOpen(false); });
+    root.querySelector('#nbedl-manual-backdrop')
+        .addEventListener('click', function () { setOpen(false); });
+
+    // Esc 닫기 — parent document 에 한 번만 부착 (rerun 중복 방지)
+    if (!pwin.__nbedlManualEsc) {
+      pwin.__nbedlManualEsc = true;
+      pdoc.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && pwin.__nbedlManualOpen) {
+          var r = pdoc.getElementById('nbedl-manual-root');
+          if (r) { r.classList.remove('open'); pwin.__nbedlManualOpen = false; }
+        }
+      });
+    }
+  } catch (e) { /* cross-origin 등: 조용히 무시 */ }
+})();
+
+// --- st.form 안에서 Enter 제출 차단 (input/select 만, textarea 제외) ---
+(function () {
+  try {
+    var pwin = window.parent;
+    var pdoc = pwin.document;
+    if (pwin.__nbedlEnterGuard) return;   // de-dup: 한 번만 부착
+    pwin.__nbedlEnterGuard = true;
+    pdoc.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      var t = e.target;
+      if (!t) return;
+      var tag = (t.tagName || '').toLowerCase();
+      if (tag === 'textarea') return;               // 멀티라인은 허용
+      if (tag !== 'input' && tag !== 'select') return;
+      var inForm = t.closest && t.closest('[data-testid="stForm"]');
+      if (inForm) { e.preventDefault(); e.stopImmediatePropagation(); }
+    }, true);   // capture 단계
+  } catch (e) { /* 무시 */ }
+})();
+</script>
+"""
+
+
+def render_manual_panel() -> None:
+    """사용 설명서 슬라이드-인 패널 + st.form Enter-가드를 parent DOM 에 주입.
+
+    app.py 최상단에서 한 번만 호출 → 모든 화면·탭에 북마크 탭이 노출된다.
+    height=0 iframe 이라 레이아웃을 차지하지 않는다.
+    """
+    components.html(_MANUAL_HTML, height=0)
+
+
+# 최상단에서 1회 호출 (모든 탭/화면에 북마크 탭 상시 노출)
+render_manual_panel()
+
+
+# ===========================================================================
+# 2. 캐싱된 로드/전처리 (파일 bytes + config 문자열로 키)
+# ===========================================================================
+@st.cache_data(show_spinner=False)
+def cached_load(file_bytes: bytes, filename: str):
+    """파일 바이트로부터 RamanData 로드 (내용 기반 캐시)."""
+    return loader.load_file(io.BytesIO(file_bytes), filename=filename)
+
+
+@st.cache_data(show_spinner="전처리 중… (400 스펙트럼)")
+def cached_preprocess(file_bytes: bytes, filename: str, config_json: str) -> np.ndarray:
+    """전처리 결과 캐시. config_json 이 같으면 재계산하지 않음."""
+    rd = cached_load(file_bytes, filename)
+    cfg = json.loads(config_json)
+    return preprocess.apply_preprocessing(rd.spectra, rd.waves, cfg)
+
+
+# ===========================================================================
+# 3. 세션 → config dict 빌더
+# ===========================================================================
+def build_preprocess_config() -> dict:
+    ss = st.session_state
+    cfg: dict = {}
+    if ss.pp_cosmic:
+        cfg["cosmic"] = {"threshold": float(ss.pp_cosmic_thr),
+                         "window": int(ss.pp_cosmic_win)}
+    if ss.pp_baseline == "als":
+        cfg["baseline"] = {"method": "als", "lam": float(ss.pp_als_lam),
+                           "p": float(ss.pp_als_p), "niter": int(ss.pp_als_niter)}
+    elif ss.pp_baseline == "poly":
+        cfg["baseline"] = {"method": "poly", "order": int(ss.pp_poly_order)}
+    if ss.pp_smooth:
+        cfg["smooth"] = {"window": int(ss.pp_smooth_win), "poly": int(ss.pp_smooth_poly)}
+    if ss.pp_norm == "max":
+        cfg["normalize"] = {"mode": "max"}
+    elif ss.pp_norm == "peak":
+        cfg["normalize"] = {"mode": "peak", "peak_wave": float(ss.pp_norm_peak)}
+    return cfg
+
+
+def build_extract_params() -> tuple[str, dict]:
+    ss = st.session_state
+    mode = ss.ex_mode
+    if mode == "single":
+        return mode, {"wave": float(ss.ex_wave)}
+    if mode in ("peak_max", "peak_area", "peak_position", "fwhm"):
+        return mode, {"w1": float(ss.ex_w1), "w2": float(ss.ex_w2)}
+    return mode, {"a1": float(ss.ex_a1), "a2": float(ss.ex_a2),
+                  "b1": float(ss.ex_b1), "b2": float(ss.ex_b2),
+                  "metric": ss.ex_metric}
+
+
+def build_grid_config() -> dict:
+    ss = st.session_state
+    ops = [op for op in OPS if ss.get(f"op_{op}", False)]
+    return {"scan": ss.or_scan, "start": ss.or_start, "ops": ops}
+
+
+def build_plot_config(grid_arr: np.ndarray | None = None) -> plot.PlotConfig:
+    ss = st.session_state
+    zmin, zmax = None, None
+    if not ss.fmt_zauto:
+        zmin, zmax = float(ss.fmt_zmin), float(ss.fmt_zmax)
+    elif grid_arr is not None:
+        zmin, zmax = plot.auto_zrange(grid_arr)
+    tick = float(ss.fmt_tickspacing) if ss.fmt_tickspacing and ss.fmt_tickspacing > 0 else None
+    return plot.PlotConfig(
+        colormap=ss.fmt_cmap, zmin=zmin, zmax=zmax,
+        x_label=ss.fmt_xlabel, y_label=ss.fmt_ylabel, title=ss.fmt_title,
+        step_x=float(ss.fmt_stepx), step_y=float(ss.fmt_stepy),
+        show_ticks=ss.fmt_showticks, tick_spacing=tick,
+        colorbar_label=ss.fmt_cbarlabel, colorbar_ticks=int(ss.fmt_cbarticks),
+        font_family=ss.fmt_font, font_size_label=int(ss.fmt_fs_label),
+        font_size_tick=int(ss.fmt_fs_tick), font_size_title=int(ss.fmt_fs_title),
+        interpolation=ss.fmt_interp, lock_aspect=ss.fmt_aspect,
+        cam_azim=float(ss.cam_azim), cam_elev=float(ss.cam_elev),
+        cam_zoom=float(ss.cam_zoom),
+    )
+
+
+def full_settings_dict() -> dict:
+    """현재 전체 설정을 하나의 JSON 직렬화 가능 dict로."""
+    mode, ex_params = build_extract_params()
+    return {
+        "grid": {"nx": int(st.session_state.nx), "ny": int(st.session_state.ny)},
+        "preprocess": build_preprocess_config(),
+        "extract": {"mode": mode, "params": ex_params},
+        "orientation": build_grid_config(),
+        "format": {k: st.session_state[k] for k in DEFAULTS if k.startswith("fmt_")},
+        "camera": {k: st.session_state[k] for k in DEFAULTS if k.startswith("cam_")},
+    }
+
+
+def apply_settings_dict(cfg: dict):
+    """설정 dict를 세션 위젯 값으로 복원 (프리셋/JSON 불러오기)."""
+    g = cfg.get("grid", {})
+    st.session_state.nx = int(g.get("nx", st.session_state.nx))
+    st.session_state.ny = int(g.get("ny", st.session_state.ny))
+
+    pp = cfg.get("preprocess", {})
+    st.session_state.pp_cosmic = "cosmic" in pp
+    if "cosmic" in pp:
+        st.session_state.pp_cosmic_thr = float(pp["cosmic"].get("threshold", 5.0))
+        st.session_state.pp_cosmic_win = int(pp["cosmic"].get("window", 5))
+    bl = pp.get("baseline") or {}
+    st.session_state.pp_baseline = bl.get("method") or "off"
+    if bl.get("method") == "als":
+        st.session_state.pp_als_lam = float(bl.get("lam", 1e5))
+        st.session_state.pp_als_p = float(bl.get("p", 0.01))
+        st.session_state.pp_als_niter = int(bl.get("niter", 10))
+    elif bl.get("method") == "poly":
+        st.session_state.pp_poly_order = int(bl.get("order", 3))
+    sm = pp.get("smooth")
+    st.session_state.pp_smooth = bool(sm)
+    if sm:
+        st.session_state.pp_smooth_win = int(sm.get("window", 11))
+        st.session_state.pp_smooth_poly = int(sm.get("poly", 3))
+    nm = pp.get("normalize") or {}
+    st.session_state.pp_norm = nm.get("mode", "off")
+    if nm.get("mode") == "peak":
+        st.session_state.pp_norm_peak = float(nm.get("peak_wave", 1580.0))
+
+    ex = cfg.get("extract", {})
+    st.session_state.ex_mode = ex.get("mode", "peak_max")
+    p = ex.get("params", {})
+    for k in ("wave", "w1", "w2", "a1", "a2", "b1", "b2"):
+        if k in p:
+            st.session_state[f"ex_{k}"] = float(p[k])
+    if "metric" in p:
+        st.session_state.ex_metric = p["metric"]
+
+    ori = cfg.get("orientation", {})
+    st.session_state.or_scan = ori.get("scan", "raster")
+    st.session_state.or_start = ori.get("start", "top-left")
+    ops = set(ori.get("ops", []))
+    for op in OPS:
+        st.session_state[f"op_{op}"] = op in ops
+
+    fm = cfg.get("format", {})
+    for k, v in fm.items():
+        if k in DEFAULTS:
+            st.session_state[k] = v
+
+    cam = cfg.get("camera", {})
+    for k, v in cam.items():
+        if k in DEFAULTS:
+            st.session_state[k] = v
+
+
+def clamp_wave_params(wmin: float, wmax: float):
+    """추출 파수 파라미터를 로드된 데이터 파수 범위로 클램프 (위젯 생성 전)."""
+    for k in ("ex_wave", "ex_w1", "ex_w2", "ex_a1", "ex_a2", "ex_b1",
+              "ex_b2", "pp_norm_peak"):
+        v = float(st.session_state.get(k, wmin))
+        st.session_state[k] = float(min(max(v, wmin), wmax))
+
+
+# ===========================================================================
+# 4. Export 헬퍼
+# ===========================================================================
+# kaleido export가 실패해 matplotlib 폴백을 썼는지 표시하는 모듈 플래그.
+# (export expander 렌더 시작 시 False로 리셋 → 버튼 렌더 후 True면 st.warning 1회)
+_export_used_fallback = False
+
+
+def mpl_bytes(gridarr, pcfg, fmt: str, dpi: int, surface: bool = False,
+              transparent: bool = True) -> bytes:
+    """[폴백 전용] matplotlib 이미지 bytes. kaleido 실패 시에만 사용.
+
+    surface=True면 make_matplotlib_surface(3D)로, 아니면 make_matplotlib_heatmap(2D)로
+    렌더링해 저장. png/svg/pdf는 transparent=True(투명 배경), jpg는 transparent=False(흰 배경).
+    3D 표면은 plotly 카메라(eye≈1.6,-1.6,1.05)를 근사하도록 view_init을 조정한다.
+    """
+    import matplotlib.pyplot as plt
+    if surface:
+        fig = plot.make_matplotlib_surface(gridarr, pcfg, dpi=dpi)
+        try:  # plotly 카메라 각도 근사(화면과 최대한 비슷하게)
+            fig.axes[0].view_init(elev=22, azim=-60)
+        except Exception:
+            pass
+    else:
+        fig = plot.make_matplotlib_heatmap(gridarr, pcfg, dpi=dpi)
+    buf = io.BytesIO()
+    save_fmt = "jpeg" if str(fmt).lower() in ("jpg", "jpeg") else str(fmt).lower()
+    fig.savefig(buf, format=save_fmt, dpi=dpi, bbox_inches="tight",
+                transparent=transparent)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def export_image_bytes(gridarr, pcfg, fmt: str, dpi: int,
+                       surface: bool = False) -> bytes:
+    """화면의 Plotly figure를 그대로 kaleido로 export (화면 == export 보장).
+
+    2D 히트맵/3D 표면 모두 화면과 동일한 figure(make_heatmap/make_surface)를 새로
+    만들어 렌더링하므로 카메라 각도·종횡비·colormap·보간이 화면과 일치한다.
+
+    fmt: "png"|"svg"|"pdf"|"jpg". "jpg"는 kaleido에서 "jpeg"로 매핑.
+    배경: png/svg/pdf → 투명(paper/plot/scene 모두 rgba(0,0,0,0)).
+          jpg/jpeg → 흰색(알파 미지원).
+    scale: PNG DPI로부터 max(1, dpi/96). SVG/PDF는 벡터라도 scale 무해.
+    kaleido가 런타임에 실패하면 matplotlib 폴백(mpl_bytes)으로 넘어가고
+    _export_used_fallback 플래그를 세운다.
+    """
+    global _export_used_fallback
+    f = str(fmt).lower()
+    is_jpg = f in ("jpg", "jpeg")
+    scale = max(1, dpi / 96)
+    try:
+        # 화면 figure 객체를 건드리지 않도록 export용으로 새로 생성
+        fig = (plot.make_surface(gridarr, pcfg) if surface
+               else plot.make_heatmap(gridarr, pcfg))
+        if is_jpg:
+            fig.update_layout(paper_bgcolor="white", plot_bgcolor="white")
+            if surface:
+                fig.update_scenes(xaxis_backgroundcolor="white",
+                                  yaxis_backgroundcolor="white",
+                                  zaxis_backgroundcolor="white")
+        else:
+            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)",
+                              plot_bgcolor="rgba(0,0,0,0)")
+            if surface:
+                fig.update_scenes(xaxis_backgroundcolor="rgba(0,0,0,0)",
+                                  yaxis_backgroundcolor="rgba(0,0,0,0)",
+                                  zaxis_backgroundcolor="rgba(0,0,0,0)")
+        kfmt = "jpeg" if is_jpg else f
+        return fig.to_image(format=kfmt, scale=scale)
+    except Exception:
+        _export_used_fallback = True
+        return mpl_bytes(gridarr, pcfg, f, dpi, surface=surface,
+                         transparent=not is_jpg)
+
+
+def grid_csv_bytes(gridarr) -> bytes:
+    return pd.DataFrame(gridarr).to_csv(index=False, header=False).encode("utf-8-sig")
+
+
+def grid_xlsx_bytes(gridarr) -> bytes:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        pd.DataFrame(gridarr).to_excel(xw, index=False, header=False)
+    return buf.getvalue()
+
+
+# ===========================================================================
+# 5. 사이드바 — 파일 업로드 / 그리드 / Export / 프리셋 / Reset
+# ===========================================================================
+with st.sidebar:
+    logo_html = (f"<img src='data:image/png;base64,{_LOGO_B64}' "
+                 f"style='height:40px;margin-bottom:8px;'/>" if _LOGO_B64 else "")
+    st.markdown(logo_html, unsafe_allow_html=True)
+    st.markdown("#### ⚙️ 전역 설정")
+
+    up = st.file_uploader("라만 매핑 파일 (.xlsx / .csv / .txt)",
+                          type=["xlsx", "xls", "csv", "txt", "tsv"],
+                          key="uploader")
+
+    st.markdown("**그리드 크기**")
+    gc1, gc2 = st.columns(2)
+    gc1.number_input("nx (열)", min_value=1, max_value=1000, step=1, key="nx")
+    gc2.number_input("ny (행)", min_value=1, max_value=1000, step=1, key="ny")
+
+# ---- 파일 로드 (사이드바 이후 최상단에서 파이프라인 계산) ----
+raman = None
+load_error = None
+if up is not None:
+    try:
+        raman = cached_load(up.getvalue(), up.name)
+    except Exception as e:  # 친절한 에러
+        load_error = str(e)
+
+# ===========================================================================
+# 6. 타이틀 헤더
+# ===========================================================================
+logo_img = (f"<img src='data:image/png;base64,{_LOGO_B64}'/>" if _LOGO_B64 else "")
+st.markdown(
+    f"""
+    <div class="title-glass-container">
+        {logo_img}
+        <div>
+            <h2>Raman Mapping Studio</h2>
+            <div class="subtitle">라만 매핑 데이터 · 2D 이미지 생성 및 서식 · Origin 붙여넣기 지원</div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+if load_error:
+    st.error(f"⚠️ 파일을 불러올 수 없습니다: {load_error}")
+
+# ===========================================================================
+# 7. 파이프라인 계산 (최상단 — 세션 config로부터, 사이드바 export/탭이 공유)
+# ===========================================================================
+pipe = {"ok": False, "grid": None, "pcfg": None, "values": None,
+        "index_grid": None, "error": None}
+
+if raman is not None:
+    wmin, wmax = float(raman.waves.min()), float(raman.waves.max())
+    clamp_wave_params(wmin, wmax)
+
+    nx, ny = int(st.session_state.nx), int(st.session_state.ny)
+    # 그리드 정합성
+    try:
+        loader.validate_grid(raman.n_points, nx, ny)
+        grid_valid = True
+        grid_msg = None
+    except ValueError as e:
+        grid_valid = False
+        grid_msg = str(e)
+
+    if grid_valid:
+        try:
+            pp_cfg = build_preprocess_config()
+            spectra_pp = cached_preprocess(up.getvalue(), up.name,
+                                           json.dumps(pp_cfg, sort_keys=True))
+            mode, ex_params = build_extract_params()
+            values = extract.extract_values(spectra_pp, raman.waves, mode, **ex_params)
+            gcfg = build_grid_config()
+            gridarr = grid.apply_transform(values, nx, ny, gcfg)
+            # 클릭→원본 index 역추적용 index grid (같은 변환 적용)
+            idx_grid = grid.apply_transform(
+                np.arange(raman.n_points, dtype=float), nx, ny, gcfg
+            ).round().astype(int)
+            pcfg = build_plot_config(gridarr)
+            pipe.update(ok=True, grid=gridarr, pcfg=pcfg, values=values,
+                        index_grid=idx_grid, spectra_pp=spectra_pp)
+            # 사이드바 export(프래그먼트 밖, 이 아래 섹션 8)가 참조할 최신 값 seed.
+            # 프래그먼트가 이후 매 rerun 마다 덮어써 카메라/서식 변경을 반영한다.
+            st.session_state["_last_grid"] = gridarr
+            st.session_state["_last_pcfg"] = pcfg
+            st.session_state["_last_surface"] = (
+                st.session_state.get("view_mode") == "3D 표면(Surface)")
+        except Exception as e:
+            pipe["error"] = str(e)
+    else:
+        pipe["error"] = grid_msg
+        pipe["grid_mismatch"] = grid_msg
+
+
+# ===========================================================================
+# 8. 사이드바 (계속) — Export / 프리셋 / Reset  (파이프라인 결과 사용)
+# ===========================================================================
+def _preset_load_callback():
+    name = st.session_state.get("preset_select")
+    if not name or name == "—":
+        return
+    try:
+        with open(PRESET_DIR / name, "r", encoding="utf-8") as f:
+            apply_settings_dict(json.load(f))
+        st.session_state["_preset_msg"] = f"✅ 프리셋 '{name}' 을 불러왔습니다."
+    except Exception as e:
+        st.session_state["_preset_msg"] = f"⚠️ 프리셋 로드 실패: {e}"
+
+
+def _preset_delete_callback():
+    """선택한 프리셋 파일을 서버 디스크에서 삭제 (콜백 시점에 위젯 key 안전 갱신)."""
+    name = st.session_state.get("preset_select")
+    if not name or name == "—":
+        st.session_state["_preset_msg"] = "⚠️ 삭제할 프리셋을 선택하세요."
+        return
+    try:
+        (PRESET_DIR / name).unlink()
+        st.session_state["preset_select"] = "—"  # 삭제된 항목 선택 해제
+        st.session_state["_preset_msg"] = f"🗑️ 프리셋 '{name}' 을 삭제했습니다."
+    except Exception as e:
+        st.session_state["_preset_msg"] = f"⚠️ 삭제 실패: {e}"
+
+
+def _reset_callback():
+    for k, v in DEFAULTS.items():
+        st.session_state[k] = v
+
+
+def _apply_auto_z(gridarr):
+    """'현재 데이터로 auto z 적용' 콜백. 위젯 인스턴스화 이전(콜백 시점)에
+    fmt_zmin/fmt_zmax/fmt_zauto(위젯 key)를 안전하게 갱신한다."""
+    lo, hi = plot.auto_zrange(gridarr)
+    st.session_state.fmt_zmin = float(lo)
+    st.session_state.fmt_zmax = float(hi)
+    st.session_state.fmt_zauto = False
+
+
+def _set_camera(azim: float, elev: float, zoom: float):
+    """3D 표면 카메라 프리셋 콜백 (위젯 인스턴스화 이전에 key 갱신).
+
+    슬라이더 key(cam_azim/cam_elev/cam_zoom)를 직접 세팅하므로 슬라이더가 새 값으로
+    다시 그려지고, export 각도(같은 pcfg)도 자동으로 일치한다."""
+    st.session_state.cam_azim = float(azim)
+    st.session_state.cam_elev = float(elev)
+    st.session_state.cam_zoom = float(zoom)
+
+
+with st.sidebar:
+    st.divider()
+    with st.expander("💾 Export (이미지 · 데이터 · 설정)", expanded=False):
+        # 렌더 프래그먼트가 매 실행마다 기록한 최신 grid/pcfg/surface 플래그를 읽는다.
+        # (colormap·카메라·서식을 프래그먼트 안에서 바꿔도 export가 최신 상태를 반영)
+        _last_grid = st.session_state.get("_last_grid")
+        _last_pcfg = st.session_state.get("_last_pcfg")
+        if _last_grid is not None and _last_pcfg is not None:
+            _export_used_fallback = False
+            gridarr, pcfg = _last_grid, _last_pcfg
+            st.number_input("PNG/JPG 해상도(DPI)", min_value=72, max_value=1200,
+                            step=50, key="exp_dpi")
+            dpi = int(st.session_state.exp_dpi)
+            # 이미지 export는 현재 선택된 보기(2D 히트맵/3D 표면)를 화면 그대로 따라감.
+            is_3d = bool(st.session_state.get("_last_surface", False))
+            _stem = "raman_surface" if is_3d else "raman_map"
+            st.caption(f"이미지 export 대상: **{'3D 표면' if is_3d else '2D 히트맵'}** "
+                       "(화면의 Plotly 뷰를 그대로 저장 · PNG/SVG/PDF 투명배경, JPG 흰배경)")
+            try:
+                st.download_button("🖼️ PNG (투명)",
+                                   export_image_bytes(gridarr, pcfg, "png", dpi, surface=is_3d),
+                                   f"{_stem}.png", "image/png",
+                                   use_container_width=True)
+                st.download_button("🖼️ JPG (흰 배경)",
+                                   export_image_bytes(gridarr, pcfg, "jpg", dpi, surface=is_3d),
+                                   f"{_stem}.jpg", "image/jpeg",
+                                   use_container_width=True)
+                st.download_button("🖼️ SVG (투명)",
+                                   export_image_bytes(gridarr, pcfg, "svg", dpi, surface=is_3d),
+                                   f"{_stem}.svg", "image/svg+xml",
+                                   use_container_width=True)
+                st.download_button("🖼️ PDF (투명)",
+                                   export_image_bytes(gridarr, pcfg, "pdf", dpi, surface=is_3d),
+                                   f"{_stem}.pdf", "application/pdf",
+                                   use_container_width=True)
+            except Exception as e:
+                st.warning(f"이미지 export 오류: {e}")
+            if _export_used_fallback:
+                st.warning("kaleido export에 실패하여 matplotlib 폴백으로 저장했습니다. "
+                           "화면과 미세하게 다를 수 있습니다.")
+            st.download_button("📊 CSV 매트릭스", grid_csv_bytes(gridarr),
+                               "raman_matrix.csv", "text/csv",
+                               use_container_width=True,
+                               help="Origin에 그대로 붙여넣기 가능 (헤더/인덱스 없음)")
+            st.download_button("📊 XLSX 매트릭스", grid_xlsx_bytes(gridarr),
+                               "raman_matrix.xlsx",
+                               "application/vnd.openxmlformats-officedocument."
+                               "spreadsheetml.sheet",
+                               use_container_width=True)
+            st.download_button(
+                "🧾 설정 JSON",
+                json.dumps(full_settings_dict(), ensure_ascii=False, indent=2)
+                .encode("utf-8"),
+                "raman_settings.json", "application/json",
+                use_container_width=True)
+        else:
+            st.caption("파일 로드 + 그리드 정합 후 export가 활성화됩니다.")
+
+    with st.expander("📌 프리셋 (방향/서식 저장·불러오기)", expanded=False):
+        pname = st.text_input("프리셋 이름", key="preset_name",
+                              placeholder="예: WITec_100x")
+        if st.button("현재 설정 저장", use_container_width=True):
+            safe = "".join(c for c in (pname or "").strip()
+                           if c.isalnum() or c in ("_", "-", " ")).strip()
+            if not safe:
+                st.warning("유효한 프리셋 이름을 입력하세요.")
+            else:
+                try:
+                    with open(PRESET_DIR / f"{safe}.json", "w", encoding="utf-8") as f:
+                        json.dump(full_settings_dict(), f, ensure_ascii=False, indent=2)
+                    st.success(f"저장됨: presets/{safe}.json")
+                except Exception as e:
+                    st.warning(f"저장 실패: {e}")
+
+        existing = ["—"] + sorted(p.name for p in PRESET_DIR.glob("*.json"))
+        st.selectbox("불러올 프리셋", existing, key="preset_select")
+        pa, pd_ = st.columns(2)
+        pa.button("프리셋 적용", use_container_width=True,
+                  on_click=_preset_load_callback)
+        pd_.button("🗑️ 삭제", use_container_width=True,
+                   on_click=_preset_delete_callback)
+
+        # 선택 프리셋 개별 다운로드 (클라우드 배포 대비 백업·이식용)
+        _sel = st.session_state.get("preset_select")
+        if _sel and _sel != "—" and (PRESET_DIR / _sel).exists():
+            st.download_button("📤 선택 프리셋 다운로드",
+                               data=(PRESET_DIR / _sel).read_bytes(),
+                               file_name=_sel, mime="application/json",
+                               use_container_width=True)
+
+        # 프리셋 JSON 업로드 → presets/ 에 저장 (재부팅으로 사라져도 복원 가능)
+        up = st.file_uploader("📥 프리셋 JSON 업로드", type=["json"],
+                              key="preset_upload")
+        if up is not None:
+            _sig = (up.name, up.size)
+            if st.session_state.get("_preset_up_sig") != _sig:
+                try:
+                    raw = up.getvalue()
+                    json.loads(raw.decode("utf-8"))  # JSON 유효성 검증
+                    base = os.path.splitext(up.name)[0]
+                    safe = "".join(c for c in base
+                                   if c.isalnum() or c in ("_", "-", " ")).strip()
+                    safe = safe or "uploaded_preset"
+                    (PRESET_DIR / f"{safe}.json").write_bytes(raw)
+                    st.session_state["_preset_up_sig"] = _sig
+                    st.session_state["_preset_msg"] = (
+                        f"📥 업로드 저장됨: presets/{safe}.json")
+                except Exception as e:
+                    st.session_state["_preset_up_sig"] = _sig
+                    st.session_state["_preset_msg"] = (
+                        f"⚠️ 업로드 실패(유효한 JSON이 아닙니다): {e}")
+
+        if st.session_state.get("_preset_msg"):
+            st.info(st.session_state.pop("_preset_msg"))
+        st.caption("프리셋은 서버 디스크(presets/)에 저장됩니다. 클라우드 배포 시 "
+                   "재부팅되면 UI로 만든 프리셋은 사라질 수 있으니, 중요한 설정은 "
+                   "다운로드해 보관하고 필요할 때 업로드하세요.")
+
+    st.divider()
+    st.button("🔄 전체 초기화 (Reset)", use_container_width=True,
+              on_click=_reset_callback)
+
+
+# ===========================================================================
+# 8.5 시각화 렌더 프래그먼트 (@st.fragment)
+# ===========================================================================
+@st.fragment
+def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
+    """값싼 시각화 영역 전용 프래그먼트 (Streamlit @st.fragment).
+
+    무거운 상단 파이프라인(파일 로드 · cached_preprocess)은 이 함수 '밖(위)'에서
+    이미 계산되어 spectra_pp 로 전달된다. 이 프래그먼트는 값 추출(③)·방향(④)·
+    서식(⑤)·최종 뷰·스펙트럼 뷰어(⑥)의 값싼 부분(extract_values + apply_transform
+    + figure build + render)만 담당한다. 따라서 colormap·라벨·z-range·방향·카메라
+    같은 잦은 조정은 전체 스크립트(≈900줄)를 재실행하지 않고 이 프래그먼트만
+    재실행하여 즉시(instant) 반영된다.
+
+    사이드바 Export(프래그먼트 밖, 전체 rerun 시 실행)를 위해 최신 grid/pcfg/
+    surface 플래그를 st.session_state['_last_grid'/'_last_pcfg'/'_last_surface']에
+    기록한다. Export 다운로드 버튼 클릭은 전체 rerun 을 유발하므로 최신 값을 읽는다.
+    """
+    ss = st.session_state
+
+    # ---- ③ 매핑 값 추출 ----
+    section("③ 매핑 값 추출", "모드별 파수 조건 입력")
+    st.selectbox("추출 모드", MODES, key="ex_mode",
+                 format_func=lambda m: MODE_LABELS[m])
+    ex_mode_sel = ss.ex_mode
+    if ex_mode_sel == "single":
+        st.number_input("파수 (cm⁻¹)", min_value=wmin, max_value=wmax,
+                        step=1.0, key="ex_wave")
+    elif ex_mode_sel in ("peak_max", "peak_area", "peak_position", "fwhm"):
+        cc1, cc2 = st.columns(2)
+        cc1.number_input("구간 시작 w1 (cm⁻¹)", min_value=wmin, max_value=wmax,
+                         step=1.0, key="ex_w1")
+        cc2.number_input("구간 끝 w2 (cm⁻¹)", min_value=wmin, max_value=wmax,
+                         step=1.0, key="ex_w2")
+    else:  # ratio
+        st.markdown("**구간 A (분자)**")
+        ca1, ca2 = st.columns(2)
+        ca1.number_input("A 시작 a1", min_value=wmin, max_value=wmax,
+                         step=1.0, key="ex_a1")
+        ca2.number_input("A 끝 a2", min_value=wmin, max_value=wmax,
+                         step=1.0, key="ex_a2")
+        st.markdown("**구간 B (분모)**")
+        cb1, cb2 = st.columns(2)
+        cb1.number_input("B 시작 b1", min_value=wmin, max_value=wmax,
+                         step=1.0, key="ex_b1")
+        cb2.number_input("B 끝 b2", min_value=wmin, max_value=wmax,
+                         step=1.0, key="ex_b2")
+        st.radio("metric", ["max", "area"], key="ex_metric", horizontal=True)
+
+    st.divider()
+
+    # ---- ④ 방향 정렬 (별도 미리보기 히트맵 제거 → 아래 최종 뷰가 미리보기 겸함) ----
+    section("④ 방향 정렬", "optic 이미지와 방향을 맞추세요 · 결과는 아래 최종 뷰에 실시간 반영")
+    st.selectbox("스캔 방식", SCANS, key="or_scan")
+    st.selectbox("시작 코너", STARTS, key="or_start")
+    st.markdown("**추가 변환 (순서대로 적용)**")
+    for op in OPS:
+        st.checkbox(OP_LABELS[op], key=f"op_{op}")
+
+    # ---- 값 추출 + 그리드 변환 (값싼 연산) ----
+    grid_err = None
+    gridarr = None
+    idx_grid = None
+    try:
+        mode, ex_params = build_extract_params()
+        values = extract.extract_values(spectra_pp, raman.waves, mode, **ex_params)
+        gcfg = build_grid_config()
+        gridarr = grid.apply_transform(values, nx, ny, gcfg)
+        idx_grid = grid.apply_transform(
+            np.arange(raman.n_points, dtype=float), nx, ny, gcfg
+        ).round().astype(int)
+    except Exception as e:
+        grid_err = str(e)
+
+    st.divider()
+
+    # ---- ⑤ 히트맵 서식 ----
+    section("⑤ 히트맵 서식", "colormap · z-range · 축 · colorbar · 폰트")
+    with st.expander("서식 옵션 펼치기", expanded=True):
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            st.selectbox("Colormap", COLORMAPS, key="fmt_cmap")
+            st.checkbox("z-range 자동 (2–98%)", key="fmt_zauto")
+            if gridarr is not None:
+                st.button("현재 데이터로 auto z 적용",
+                          on_click=_apply_auto_z, args=(gridarr,))
+            if not ss.fmt_zauto:
+                st.number_input("z-min", key="fmt_zmin", format="%.4g")
+                st.number_input("z-max", key="fmt_zmax", format="%.4g")
+        with f2:
+            st.text_input("X 축 라벨", key="fmt_xlabel")
+            st.text_input("Y 축 라벨", key="fmt_ylabel")
+            st.text_input("제목", key="fmt_title")
+            st.number_input("Step X (μm)", min_value=0.0001, step=0.1,
+                            key="fmt_stepx", format="%.4g")
+            st.number_input("Step Y (μm)", min_value=0.0001, step=0.1,
+                            key="fmt_stepy", format="%.4g")
+        with f3:
+            st.text_input("Colorbar 라벨", key="fmt_cbarlabel")
+            st.number_input("Colorbar tick 개수", min_value=2, max_value=15,
+                            step=1, key="fmt_cbarticks")
+            st.selectbox("폰트", FONTS, key="fmt_font")
+            fs1, fs2, fs3 = st.columns(3)
+            fs1.number_input("라벨", min_value=6, max_value=40, key="fmt_fs_label")
+            fs2.number_input("눈금", min_value=6, max_value=40, key="fmt_fs_tick")
+            fs3.number_input("제목", min_value=6, max_value=40, key="fmt_fs_title")
+            st.checkbox("눈금 표시", key="fmt_showticks")
+            st.number_input("눈금 간격 (μm, 0=자동)", min_value=0.0, step=1.0,
+                            key="fmt_tickspacing")
+            st.selectbox("Interpolation", ["none", "bilinear"], key="fmt_interp")
+            st.checkbox("1:1 종횡비 고정", key="fmt_aspect")
+
+    if grid_err is not None:
+        st.error(f"⚠️ {grid_err}")
+        return
+
+    pcfg = build_plot_config(gridarr)
+
+    # ---- 보기 방식 + 최종 뷰 (단일 렌더 = 미리보기 겸 최종) ----
+    st.radio("보기 방식", ["2D 히트맵", "3D 표면(Surface)"],
+             key="view_mode", horizontal=True)
+    event = None
+    if ss.view_mode == "3D 표면(Surface)":
+        st.markdown("**3D 컬러맵 표면** — 마우스 드래그로 자유롭게 회전/기울여 볼 수 있습니다. "
+                    "(colormap·z-range·라벨·폰트 서식이 그대로 적용됩니다. "
+                    "스펙트럼 QC는 아래 X/Y 픽셀 입력을 사용하세요.)")
+        # 카메라 컨트롤 — 화면 == export 각도 동기화 (make_surface 가 이 값으로 eye 계산)
+        cca = st.columns(3)
+        cca[0].slider("방위각 azimuth (°)", -180.0, 180.0, step=1.0, key="cam_azim")
+        cca[1].slider("고도 elevation (°)", 0.0, 90.0, step=1.0, key="cam_elev")
+        cca[2].slider("줌 거리 (클수록 축소)", 1.2, 4.0, step=0.1, key="cam_zoom")
+        pcb = st.columns(3)
+        pcb[0].button("정면 뷰", use_container_width=True,
+                      on_click=_set_camera, args=(-90.0, 8.0, 2.4))
+        pcb[1].button("등각 뷰", use_container_width=True,
+                      on_click=_set_camera, args=(-45.0, 25.0, 2.2))
+        pcb[2].button("위에서 뷰", use_container_width=True,
+                      on_click=_set_camera, args=(-90.0, 89.0, 2.2))
+        st.caption("마우스 드래그 회전은 자유 시점(서버로 전달되지 않음)입니다. "
+                   "내보내기(Export) PNG/JPG/SVG/PDF 각도는 위 슬라이더/프리셋 값으로 결정됩니다.")
+        surf_fig = plot.make_surface(gridarr, pcfg)
+        st.plotly_chart(surf_fig, use_container_width=True, key="final_surface")
+    else:
+        st.markdown("**최종 히트맵** — 픽셀을 클릭하면 아래에 원본 스펙트럼이 표시됩니다. "
+                    "(방향/서식 변경이 이 뷰에 실시간 반영됩니다.)")
+        final_fig = plot.make_heatmap(gridarr, pcfg)
+        event = st.plotly_chart(final_fig, use_container_width=True,
+                                key="final_heatmap", on_select="rerun",
+                                selection_mode=("points", "box"))
+
+    # 사이드바 Export(프래그먼트 밖)가 읽을 최신 값 기록
+    ss["_last_grid"] = gridarr
+    ss["_last_pcfg"] = pcfg
+    ss["_last_surface"] = (ss.view_mode == "3D 표면(Surface)")
+
+    st.divider()
+    # ---- ⑥ 스펙트럼 뷰어 ----
+    section("⑥ 스펙트럼 뷰어", "히트맵 클릭 지점의 원본 스펙트럼 (QC)")
+    ny_g, nx_g = idx_grid.shape
+
+    # 클릭 이벤트 → row/col
+    clicked = None
+    try:
+        pts = event["selection"]["points"]
+    except Exception:
+        pts = []
+    if pts:
+        px, py = pts[0].get("x"), pts[0].get("y")
+        if px is not None and py is not None:
+            col = int(round((float(px) - pcfg.x0) / pcfg.step_x))
+            row = int(round((float(py) - pcfg.y0) / pcfg.step_y))
+            if 0 <= row < ny_g and 0 <= col < nx_g:
+                ss.sv_row = row
+                ss.sv_col = col
+                clicked = (row, col)
+
+    # 폴백: 수동 픽셀 선택
+    sc1, sc2, _ = st.columns([1, 1, 2])
+    ss.sv_col = min(ss.sv_col, nx_g - 1)
+    ss.sv_row = min(ss.sv_row, ny_g - 1)
+    sc1.number_input("픽셀 X (열)", min_value=0, max_value=nx_g - 1,
+                     step=1, key="sv_col")
+    sc2.number_input("픽셀 Y (행)", min_value=0, max_value=ny_g - 1,
+                     step=1, key="sv_row")
+
+    row, col = int(ss.sv_row), int(ss.sv_col)
+    orig_idx = int(idx_grid[row, col])
+    label = f"(x={col}, y={row}) · 원본 index {orig_idx}"
+    if clicked:
+        st.caption(f"클릭 선택: {label}")
+    spec_fig = plot.make_spectrum_figure(
+        raman.waves, raman.spectra[orig_idx],
+        title="원본 스펙트럼 (전처리 전)", point_label=label)
+    st.plotly_chart(spec_fig, use_container_width=True, key="spectrum_fig")
+
+
+# ===========================================================================
+# 9. 메인 탭
+# ===========================================================================
+tab_map, tab_batch = st.tabs(["🗺️ 매핑 생성", "📦 배치 처리"])
+
+
+# ---------------------------------------------------------------------------
+# 탭 1 — 매핑 생성 (핵심 워크플로우)
+# ---------------------------------------------------------------------------
+with tab_map:
+    if raman is None:
+        st.info("👈 왼쪽 사이드바에서 라만 매핑 파일을 업로드하세요. "
+                "(.xlsx / .csv / .txt 지원)")
+    else:
+        wmin, wmax = float(raman.waves.min()), float(raman.waves.max())
+
+        # ---- 파일 정보 ----
+        section("① 데이터 정보", "감지된 포맷 · 메타데이터 · 포인트 수")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("포맷", raman.source_format)
+        m2.metric("포인트 수", f"{raman.n_points}")
+        m3.metric("파수 채널", f"{raman.n_waves}")
+        m4.metric("파수 범위", f"{wmin:.0f}~{wmax:.0f}")
+        if raman.metadata:
+            with st.expander("메타데이터 전체 보기"):
+                st.json(raman.metadata)
+        # 그리드 힌트 안내
+        hint = []
+        if raman.map_width:
+            hint.append(f"Map Width={raman.map_width}")
+        if raman.step_x:
+            hint.append(f"Step X/Y={raman.step_x}/{raman.step_y}")
+        if hint:
+            st.caption("메타 힌트: " + ", ".join(hint) +
+                       f" · 기본 그리드 {int(np.sqrt(raman.n_points))}×"
+                       f"{int(np.sqrt(raman.n_points))} 추천")
+
+        if pipe.get("grid_mismatch"):
+            st.error(f"⚠️ {pipe['grid_mismatch']} — 사이드바에서 nx/ny를 조정하세요.")
+
+        st.divider()
+
+        # ---- 전처리 ----
+        section("② 전처리 (선택)", "cosmic · baseline · smoothing · normalize")
+        with st.expander("전처리 옵션 펼치기", expanded=False):
+            c1, c2 = st.columns(2)
+            with c1:
+                st.checkbox("Cosmic ray 제거", key="pp_cosmic")
+                if st.session_state.pp_cosmic:
+                    st.number_input("threshold (MAD 배수)", min_value=1.0,
+                                    max_value=20.0, step=0.5, key="pp_cosmic_thr")
+                    st.number_input("window (홀수)", min_value=3, max_value=51,
+                                    step=2, key="pp_cosmic_win")
+                st.selectbox("Baseline 보정", ["off", "als", "poly"],
+                             key="pp_baseline")
+                st.caption("⚠️ ALS는 400 스펙트럼에 약 4초 걸립니다(가장 무거운 단계). "
+                           "빠른 작업은 off 또는 poly 를 권장합니다. 동일 설정은 캐시되어 "
+                           "재계산 없이 즉시 반영됩니다.")
+                if st.session_state.pp_baseline == "als":
+                    st.number_input("ALS λ (lam)", min_value=1.0,
+                                    step=1000.0, key="pp_als_lam", format="%.0f")
+                    st.number_input("ALS p", min_value=0.0001, max_value=0.5,
+                                    step=0.001, key="pp_als_p", format="%.4f")
+                    st.number_input("ALS niter", min_value=1, max_value=50,
+                                    step=1, key="pp_als_niter")
+                elif st.session_state.pp_baseline == "poly":
+                    st.number_input("다항식 차수", min_value=0, max_value=15,
+                                    step=1, key="pp_poly_order")
+            with c2:
+                st.checkbox("Savitzky-Golay 평활", key="pp_smooth")
+                if st.session_state.pp_smooth:
+                    st.number_input("window (홀수)", min_value=3, max_value=101,
+                                    step=2, key="pp_smooth_win")
+                    st.number_input("polyorder", min_value=0, max_value=10,
+                                    step=1, key="pp_smooth_poly")
+                st.selectbox("Normalization", ["off", "max", "peak"],
+                             key="pp_norm")
+                if st.session_state.pp_norm == "peak":
+                    st.number_input("기준 파수 (cm⁻¹)", min_value=wmin,
+                                    max_value=wmax, step=1.0, key="pp_norm_peak")
+
+        st.divider()
+
+        # ---- ③~⑥ 시각화·서식·렌더 (프래그먼트) ----
+        # colormap·라벨·z-range·방향·카메라 등 값싼 조정은 이 프래그먼트만 재실행하여
+        # 즉시 반영된다(전체 스크립트/전처리 재실행 없음). nx/ny·파일·전처리 변경만
+        # 전체 rerun 을 유발하며 그것들은 프래그먼트 밖(사이드바/②)에 있다.
+        if pipe["ok"]:
+            render_visualization(
+                raman, pipe["spectra_pp"],
+                int(st.session_state.nx), int(st.session_state.ny), wmin, wmax)
+        elif pipe["error"]:
+            st.error(f"⚠️ {pipe['error']}")
+        else:
+            st.info("사이드바에서 그리드(nx×ny)를 데이터 포인트 수에 맞추면 "
+                    "시각화가 표시됩니다.")
+
+
+# ---------------------------------------------------------------------------
+# 탭 2 — 배치 처리
+# ---------------------------------------------------------------------------
+with tab_batch:
+    section("📦 배치 처리", "여러 파일에 현재 설정을 일괄 적용 → ZIP 다운로드")
+    st.caption("현재 탭①의 전처리·추출·방향·서식 설정을 그대로 각 파일에 적용합니다. "
+               "그리드 크기(nx×ny)와 포인트 수가 맞는 파일만 처리됩니다.")
+
+    batch_files = st.file_uploader(
+        "여러 라만 매핑 파일 업로드", type=["xlsx", "xls", "csv", "txt", "tsv"],
+        accept_multiple_files=True, key="batch_uploader")
+
+    if st.button("배치 실행", type="primary", disabled=not batch_files):
+        nx, ny = int(st.session_state.nx), int(st.session_state.ny)
+        pp_cfg = build_preprocess_config()
+        mode, ex_params = build_extract_params()
+        gcfg = build_grid_config()
+        dpi = int(st.session_state.exp_dpi)
+
+        zip_buf = io.BytesIO()
+        results, errors = [], []
+        prog = st.progress(0.0)
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for i, bf in enumerate(batch_files):
+                try:
+                    rd = cached_load(bf.getvalue(), bf.name)
+                    loader.validate_grid(rd.n_points, nx, ny)
+                    sp = preprocess.apply_preprocessing(rd.spectra, rd.waves, pp_cfg)
+                    vals = extract.extract_values(sp, rd.waves, mode, **ex_params)
+                    garr = grid.apply_transform(vals, nx, ny, gcfg)
+                    pcfg = build_plot_config(garr)
+                    stem = os.path.splitext(bf.name)[0]
+                    zf.writestr(f"{stem}_2d.png",
+                                export_image_bytes(garr, pcfg, "png", dpi,
+                                                   surface=False))
+                    zf.writestr(f"{stem}_3d.png",
+                                export_image_bytes(garr, pcfg, "png", dpi,
+                                                   surface=True))
+                    zf.writestr(f"{stem}_matrix.csv", grid_csv_bytes(garr))
+                    results.append(bf.name)
+                except Exception as e:
+                    errors.append(f"{bf.name}: {e}")
+                prog.progress((i + 1) / len(batch_files))
+            # 공통 설정도 포함
+            zf.writestr("settings.json",
+                        json.dumps(full_settings_dict(), ensure_ascii=False, indent=2))
+
+        st.session_state["_batch_zip"] = zip_buf.getvalue()
+        st.session_state["_batch_results"] = results
+        st.session_state["_batch_errors"] = errors
+
+    if st.session_state.get("_batch_zip"):
+        res = st.session_state.get("_batch_results", [])
+        errs = st.session_state.get("_batch_errors", [])
+        st.success(f"✅ 처리 완료: {len(res)}개 파일 (2D PNG + 3D PNG + CSV)")
+        if errs:
+            with st.expander(f"⚠️ 실패 {len(errs)}건"):
+                for e in errs:
+                    st.write("• " + e)
+        st.download_button("📥 결과 ZIP 다운로드", st.session_state["_batch_zip"],
+                           "raman_batch.zip", "application/zip",
+                           type="primary", use_container_width=True)

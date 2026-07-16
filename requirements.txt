@@ -1,0 +1,10 @@
+streamlit
+streamlit-extras
+pandas
+numpy
+scipy
+plotly
+matplotlib
+openpyxl
+kaleido
+pytest

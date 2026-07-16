@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environment (절대 커밋 금지 — 배포 서버가 requirements.txt로 재설치)
+.venv/
+venv/
+env/
+
+# 사용자가 UI로 만든 로컬 프리셋은 커밋하지 않음 (다운로드/업로드로 관리)
+presets/*.json
+!presets/.gitkeep
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
