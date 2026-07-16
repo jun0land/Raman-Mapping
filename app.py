@@ -67,6 +67,11 @@ OP_LABELS = {
 FONTS = ["Arial", "Myriad Pro", "Times New Roman", "Pretendard", "Calibri",
          "Helvetica", "Nanum Gothic"]
 
+# 데이터 정보(① 포맷 metric) 표시용 친화 라벨.
+# loader 의 내부 source_format 값("equipment"/"wide"/"long")은 그대로 유지한다
+# (테스트가 "equipment" 에 의존). 화면에 보이는 텍스트만 매핑한다.
+FORMAT_LABELS = {"equipment": "WEVE", "wide": "Wide", "long": "Long"}
+
 # 세션 기본값 (모든 위젯 key를 여기서 초기화 → 프리셋/최상단 파이프라인이 안전하게 읽음)
 DEFAULTS = {
     "nx": 20, "ny": 20,
@@ -864,61 +869,24 @@ def _set_camera(azim: float, elev: float, zoom: float):
 
 with st.sidebar:
     st.divider()
-    with st.expander("💾 Export (이미지 · 데이터 · 설정)", expanded=False):
-        # 렌더 프래그먼트가 매 실행마다 기록한 최신 grid/pcfg/surface 플래그를 읽는다.
-        # (colormap·카메라·서식을 프래그먼트 안에서 바꿔도 export가 최신 상태를 반영)
-        _last_grid = st.session_state.get("_last_grid")
-        _last_pcfg = st.session_state.get("_last_pcfg")
-        if _last_grid is not None and _last_pcfg is not None:
-            _export_used_fallback = False
-            gridarr, pcfg = _last_grid, _last_pcfg
-            st.number_input("PNG/JPG 해상도(DPI)", min_value=72, max_value=1200,
-                            step=50, key="exp_dpi")
-            dpi = int(st.session_state.exp_dpi)
-            # 이미지 export는 현재 선택된 보기(2D 히트맵/3D 표면)를 화면 그대로 따라감.
-            is_3d = bool(st.session_state.get("_last_surface", False))
-            _stem = "raman_surface" if is_3d else "raman_map"
-            st.caption(f"이미지 export 대상: **{'3D 표면' if is_3d else '2D 히트맵'}** "
-                       "(화면의 Plotly 뷰를 그대로 저장 · PNG/SVG/PDF 투명배경, JPG 흰배경)")
-            try:
-                st.download_button("🖼️ PNG (투명)",
-                                   export_image_bytes(gridarr, pcfg, "png", dpi, surface=is_3d),
-                                   f"{_stem}.png", "image/png",
-                                   use_container_width=True)
-                st.download_button("🖼️ JPG (흰 배경)",
-                                   export_image_bytes(gridarr, pcfg, "jpg", dpi, surface=is_3d),
-                                   f"{_stem}.jpg", "image/jpeg",
-                                   use_container_width=True)
-                st.download_button("🖼️ SVG (투명)",
-                                   export_image_bytes(gridarr, pcfg, "svg", dpi, surface=is_3d),
-                                   f"{_stem}.svg", "image/svg+xml",
-                                   use_container_width=True)
-                st.download_button("🖼️ PDF (투명)",
-                                   export_image_bytes(gridarr, pcfg, "pdf", dpi, surface=is_3d),
-                                   f"{_stem}.pdf", "application/pdf",
-                                   use_container_width=True)
-            except Exception as e:
-                st.warning(f"이미지 export 오류: {e}")
-            if _export_used_fallback:
-                st.warning("kaleido export에 실패하여 matplotlib 폴백으로 저장했습니다. "
-                           "화면과 미세하게 다를 수 있습니다.")
-            st.download_button("📊 CSV 매트릭스", grid_csv_bytes(gridarr),
-                               "raman_matrix.csv", "text/csv",
-                               use_container_width=True,
-                               help="Origin에 그대로 붙여넣기 가능 (헤더/인덱스 없음)")
-            st.download_button("📊 XLSX 매트릭스", grid_xlsx_bytes(gridarr),
-                               "raman_matrix.xlsx",
-                               "application/vnd.openxmlformats-officedocument."
-                               "spreadsheetml.sheet",
-                               use_container_width=True)
-            st.download_button(
-                "🧾 설정 JSON",
-                json.dumps(full_settings_dict(), ensure_ascii=False, indent=2)
-                .encode("utf-8"),
-                "raman_settings.json", "application/json",
-                use_container_width=True)
-        else:
-            st.caption("파일 로드 + 그리드 정합 후 export가 활성화됩니다.")
+    with st.expander("💾 Export (설정 · 해상도)", expanded=False):
+        # 이미지·매트릭스 내보내기 UI 는 렌더 프래그먼트(최종 뷰 하단)로 이동했다.
+        # 이유: view_mode 라디오·카메라 슬라이더가 @st.fragment 안에 있어 그 변경은
+        # 프래그먼트-스코프 rerun 만 유발한다. export UI 가 사이드바(프래그먼트 밖)에
+        # 있으면 재실행되지 않아 이전 뷰의 바이트/caption 을 그대로 들고 있게 되어
+        # 2D↔3D 가 뒤바뀌고 caption 이 stale 해진다. 프래그먼트 안으로 옮기면
+        # 같은 rerun 에서 gridarr/pcfg/ss.view_mode 를 직접 읽어 항상 화면과 일치한다.
+        # 여기 남는 DPI·설정 JSON 은 session_state 만 읽으므로 언제나 최신이다.
+        st.number_input("PNG/JPG 해상도(DPI)", min_value=72, max_value=1200,
+                        step=50, key="exp_dpi")
+        st.caption("🖼️ 이미지 · 📊 매트릭스 내보내기는 아래 **최종 뷰(플롯) 하단**에서 "
+                   "현재 화면 뷰(2D/3D) 기준으로 제공됩니다.")
+        st.download_button(
+            "🧾 설정 JSON",
+            json.dumps(full_settings_dict(), ensure_ascii=False, indent=2)
+            .encode("utf-8"),
+            "raman_settings.json", "application/json",
+            use_container_width=True)
 
     with st.expander("📌 프리셋 (방향/서식 저장·불러오기)", expanded=False):
         pname = st.text_input("프리셋 이름", key="preset_name",
@@ -1002,7 +970,11 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
     사이드바 Export(프래그먼트 밖, 전체 rerun 시 실행)를 위해 최신 grid/pcfg/
     surface 플래그를 st.session_state['_last_grid'/'_last_pcfg'/'_last_surface']에
     기록한다. Export 다운로드 버튼 클릭은 전체 rerun 을 유발하므로 최신 값을 읽는다.
+
+    이미지 export UI 도 이 프래그먼트 안(최종 뷰 하단)에서 렌더링하므로 kaleido
+    폴백 플래그(_export_used_fallback, 모듈 전역)를 리셋/판독하려면 global 선언이 필요하다.
     """
+    global _export_used_fallback
     ss = st.session_state
 
     # ---- ③ 매핑 값 추출 ----
@@ -1135,10 +1107,63 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
                                 key="final_heatmap", on_select="rerun",
                                 selection_mode=("points", "box"))
 
-    # 사이드바 Export(프래그먼트 밖)가 읽을 최신 값 기록
+    # (레거시) 예전 사이드바 Export 가 읽던 최신 값. 이제 이미지/매트릭스 export 는
+    # 바로 아래 프래그먼트 내부에서 gridarr/pcfg/ss.view_mode 를 직접 사용하므로
+    # 이 값들은 더 이상 export 에 쓰이지 않는다. 다른 코드가 참조하지 않아 무해하게 유지.
     ss["_last_grid"] = gridarr
     ss["_last_pcfg"] = pcfg
     ss["_last_surface"] = (ss.view_mode == "3D 표면(Surface)")
+
+    # ---- 내보내기 (이미지 · 매트릭스) — 현재 화면 뷰 기준 ----
+    # view_mode 라디오·카메라 슬라이더와 같은 fragment rerun 에서 실행되므로,
+    # is_3d/caption/export 바이트가 항상 화면에 보이는 뷰와 일치한다.
+    # is_3d 는 _last_surface 가 아니라 ss.view_mode 에서 직접 판정하고,
+    # DPI 는 사이드바 위젯 값(exp_dpi)을 session_state 에서 읽어 항상 최신이다.
+    st.divider()
+    section("내보내기 (이미지 · 매트릭스)",
+            "현재 화면 뷰를 그대로 저장 · CSV/XLSX 는 Origin 붙여넣기용")
+    is_3d = (ss.view_mode == "3D 표면(Surface)")
+    exp_dpi = int(st.session_state.get("exp_dpi", 300))
+    _stem = "raman_surface" if is_3d else "raman_map"
+    st.caption(f"이미지 export 대상: **{'3D 표면' if is_3d else '2D 히트맵'}** "
+               "(화면의 Plotly 뷰를 그대로 저장 · PNG/SVG/PDF 투명배경, JPG 흰배경)")
+    _export_used_fallback = False
+    ie1, ie2, ie3, ie4 = st.columns(4)
+    try:
+        ie1.download_button(
+            "🖼️ PNG (투명)",
+            export_image_bytes(gridarr, pcfg, "png", exp_dpi, surface=is_3d),
+            f"{_stem}.png", "image/png", use_container_width=True)
+        ie2.download_button(
+            "🖼️ JPG (흰 배경)",
+            export_image_bytes(gridarr, pcfg, "jpg", exp_dpi, surface=is_3d),
+            f"{_stem}.jpg", "image/jpeg", use_container_width=True)
+        ie3.download_button(
+            "🖼️ SVG (투명)",
+            export_image_bytes(gridarr, pcfg, "svg", exp_dpi, surface=is_3d),
+            f"{_stem}.svg", "image/svg+xml", use_container_width=True)
+        ie4.download_button(
+            "🖼️ PDF (투명)",
+            export_image_bytes(gridarr, pcfg, "pdf", exp_dpi, surface=is_3d),
+            f"{_stem}.pdf", "application/pdf", use_container_width=True)
+    except Exception as e:
+        st.warning(f"이미지 export 오류: {e}")
+    if _export_used_fallback:
+        st.warning("kaleido export에 실패하여 matplotlib 폴백으로 저장했습니다. "
+                   "화면과 미세하게 다를 수 있습니다.")
+    me1, me2 = st.columns(2)
+    me1.download_button(
+        "📊 CSV 매트릭스", grid_csv_bytes(gridarr),
+        "raman_matrix.csv", "text/csv", use_container_width=True,
+        help="Origin에 그대로 붙여넣기 가능 (헤더/인덱스 없음)")
+    me2.download_button(
+        "📊 XLSX 매트릭스", grid_xlsx_bytes(gridarr),
+        "raman_matrix.xlsx",
+        "application/vnd.openxmlformats-officedocument."
+        "spreadsheetml.sheet", use_container_width=True)
+    if is_3d:
+        st.caption("3D 표면 export 각도는 위 슬라이더/프리셋 값 기준입니다 "
+                   "(마우스 드래그 자유 회전은 저장에 반영되지 않음).")
 
     st.divider()
     # ---- ⑥ 스펙트럼 뷰어 ----
@@ -1200,7 +1225,8 @@ with tab_map:
         # ---- 파일 정보 ----
         section("① 데이터 정보", "감지된 포맷 · 메타데이터 · 포인트 수")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("포맷", raman.source_format)
+        m1.metric("포맷", FORMAT_LABELS.get(raman.source_format,
+                                          raman.source_format))
         m2.metric("포인트 수", f"{raman.n_points}")
         m3.metric("파수 채널", f"{raman.n_waves}")
         m4.metric("파수 범위", f"{wmin:.0f}~{wmax:.0f}")
