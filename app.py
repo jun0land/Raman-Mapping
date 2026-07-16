@@ -332,7 +332,7 @@ _MANUAL_HTML = r"""
       #nbedl-manual-root, #nbedl-manual-root * { box-sizing: border-box;
         font-family: 'Pretendard', -apple-system, 'Nanum Gothic', sans-serif; }
       #nbedl-manual-tab {
-        position: fixed; top: 40%; right: 0; z-index: 2147483000;
+        position: fixed; top: 28%; right: 0; z-index: 2147483000;
         writing-mode: vertical-rl; text-orientation: mixed;
         background: linear-gradient(160deg, #ed542b, #f68b21);
         color: #fff; font-weight: 700; letter-spacing: 2px; font-size: 15px;
@@ -1190,10 +1190,9 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
             except Exception:
                 pass
 
-        st.markdown("**3D 컬러맵 표면** — 마우스 드래그로 회전하면 아래 슬라이더가 자동으로 "
-                    "맞춰집니다(드래그를 놓는 순간 1회 동기화). 슬라이더로 각도를 직접 잡을 "
-                    "수도 있습니다. (colormap·z-range·라벨·폰트 서식이 그대로 적용됩니다. "
-                    "스펙트럼 QC는 아래 X/Y 픽셀 입력을 사용하세요.)")
+        st.markdown("**3D 컬러맵 표면** — 방위각·고도·줌 슬라이더로 각도를 잡습니다. "
+                    "마우스 드래그는 자유 관찰용입니다. (colormap·z-range·라벨·폰트 서식이 "
+                    "그대로 적용됩니다. 스펙트럼 QC는 아래 X/Y 픽셀 입력을 사용하세요.)")
         # 카메라 컨트롤 — 화면 == export 각도 동기화 (make_surface 가 이 값으로 eye 계산)
         cca = st.columns(3)
         cca[0].slider("방위각 azimuth (°)", -180.0, 180.0, step=1.0, key="cam_azim")
@@ -1206,60 +1205,14 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
                       on_click=_set_camera, args=(-45.0, 25.0, 2.2))
         pcb[2].button("위에서 뷰", use_container_width=True,
                       on_click=_set_camera, args=(-90.0, 89.0, 2.2))
-        st.caption("마우스 드래그 회전 → 슬라이더 자동 동기화. 내보내기(Export) "
-                   "PNG/JPG/SVG/PDF 각도는 (동기화된) 슬라이더/프리셋 값으로 결정됩니다.")
+        st.caption("내보내기(Export) PNG/JPG/SVG/PDF 각도는 위 슬라이더/프리셋 값으로 "
+                   "결정됩니다.")
 
+        # 3D 표면은 st.plotly_chart 로 렌더(항상 안정적으로 표시). 카메라 각도는
+        # make_surface 가 슬라이더(cam_*)로 계산한 eye 를 사용한다. 마우스 드래그는
+        # 브라우저에서 자유 회전용이며 export 에는 반영되지 않는다(슬라이더/프리셋 기준).
         surf_fig = plot.make_surface(gridarr, pcfg)
-
-        # --- (B) revision: 슬라이더/서식이 바뀔 때만 증가 → 컴포넌트가 새 카메라를
-        # 확실히 재적용하도록 강제(figure.to_dict 도 매번 새 카메라를 담고 있음). ---
-        _rev_key = (round(float(ss.cam_azim), 2), round(float(ss.cam_elev), 2),
-                    round(float(ss.cam_zoom), 2), ss.fmt_cmap, pcfg.zmin, pcfg.zmax,
-                    ss.fmt_title, ss.fmt_interp, bool(ss.fmt_aspect),
-                    ss.fmt_cbarlabel, tuple(np.asarray(gridarr).shape))
-        if ss.get("_surf_rev_key") != _rev_key:
-            ss["_surf_rev_key"] = _rev_key
-            ss["_surf_rev"] = int(ss.get("_surf_rev", 0)) + 1
-        _revision = int(ss.get("_surf_rev", 0))
-
-        # --- (C) 커스텀 컴포넌트 렌더 + 카메라 캡처 (실패 시 st.plotly_chart 폴백) ---
-        cam_val = None
-        _component_ok = False
-        if _SURFACE3D is not None:
-            try:
-                # to_json → json.loads 로 numpy 를 순수 JSON 직렬화(컴포넌트 args 안전)
-                _fig_dict = json.loads(surf_fig.to_json())
-                cam_val = _SURFACE3D(figure=_fig_dict, revision=_revision,
-                                     key="surf3d_component", default=None)
-                _component_ok = True
-            except Exception:
-                _component_ok = False
-        if not _component_ok:
-            # 컴포넌트를 못 쓰는 환경(경로/CSP 등)에서도 3D 는 항상 보이도록 폴백
-            st.plotly_chart(surf_fig, use_container_width=True,
-                            key="surf3d_fallback")
-
-        # --- (D) 드래그로 온 eye → 슬라이더와 유의미하게 다르면 pending 저장 후 rerun ---
-        # rerun 하면 위 (A) 에서 슬라이더가 새 각도로 다시 그려지고, 다음 렌더의
-        # surf_fig 카메라도 일치한다(루프 닫힘). 컴포넌트는 '진짜 드래그'에만 값을
-        # post 하고, epsilon 비교로 사실상 동일한 값은 rerun 하지 않아 무한 rerun 방지.
-        if isinstance(cam_val, dict) and isinstance(cam_val.get("eye"), dict):
-            _eye = cam_val["eye"]
-            try:
-                _naz, _nel, _nzm = eye_to_azel(float(_eye["x"]), float(_eye["y"]),
-                                               float(_eye["z"]))
-                _naz = max(-180.0, min(180.0, _naz))
-                _nel = max(0.0, min(90.0, _nel))
-                _nzm = max(1.2, min(4.0, _nzm))
-                if (abs(_naz - float(ss.cam_azim)) > 0.5 or
-                        abs(_nel - float(ss.cam_elev)) > 0.5 or
-                        abs(_nzm - float(ss.cam_zoom)) > 0.02):
-                    ss["_surf_pending_cam"] = {"x": float(_eye["x"]),
-                                               "y": float(_eye["y"]),
-                                               "z": float(_eye["z"])}
-                    st.rerun()
-            except Exception:
-                pass
+        st.plotly_chart(surf_fig, use_container_width=True, key="surf3d_plot")
     else:
         st.markdown("**최종 히트맵** — 픽셀을 클릭하면 아래에 원본 스펙트럼이 표시됩니다. "
                     "(방향/서식 변경이 이 뷰에 실시간 반영됩니다.)")
