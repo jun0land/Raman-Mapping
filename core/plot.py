@@ -163,6 +163,10 @@ class PlotConfig:
     렌더링:
         interpolation: "none"(픽셀) | "bilinear"(부드럽게).
         lock_aspect: 1:1 종횡비 고정 여부.
+        fill_mode: 2D 맵 채우기 방식. "pixel"(go.Heatmap 격자 히트맵, 기본) |
+                   "contour"(go.Contour 등고선 채움, Origin 스타일 컬러 컨투어).
+                   3D(make_surface)에는 영향을 주지 않는다. "contour"일 때
+                   interpolation(zsmooth)은 무시된다.
 
     3D 표면 카메라 (make_surface 전용):
         cam_azim: 방위각(degrees). XY 평면에서의 회전 각도. 기본 -45.0.
@@ -205,6 +209,7 @@ class PlotConfig:
     # 렌더링
     interpolation: str = "none"
     lock_aspect: bool = True
+    fill_mode: str = "pixel"  # "pixel"(go.Heatmap) | "contour"(go.Contour)
 
     # 3D 표면 카메라 (구면 좌표 → Plotly scene.camera.eye)
     cam_azim: float = -45.0
@@ -283,26 +288,46 @@ def make_heatmap(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
 
     zsmooth = "best" if str(cfg.interpolation).lower() in ("bilinear", "best") else False
 
-    heatmap = go.Heatmap(
-        z=arr,
-        x=x_coords,
-        y=y_coords,
-        colorscale=_plotly_colorscale(cfg.colormap),
-        zmin=cfg.zmin,
-        zmax=cfg.zmax,
-        zsmooth=zsmooth,
-        colorbar=dict(
-            title=dict(
-                text=cfg.colorbar_label,
-                font=dict(family=_plotly_font(cfg.font_family), size=cfg.font_size_label),
-            ),
-            nticks=int(cfg.colorbar_ticks),
-            tickfont=dict(family=_plotly_font(cfg.font_family), size=cfg.font_size_tick),
+    colorscale = _plotly_colorscale(cfg.colormap)
+    colorbar = dict(
+        title=dict(
+            text=cfg.colorbar_label,
+            font=dict(family=_plotly_font(cfg.font_family), size=cfg.font_size_label),
         ),
-        hovertemplate="X=%{x}<br>Y=%{y}<br>z=%{z}<extra></extra>",
+        nticks=int(cfg.colorbar_ticks),
+        tickfont=dict(family=_plotly_font(cfg.font_family), size=cfg.font_size_tick),
     )
 
-    fig = go.Figure(data=heatmap)
+    if str(cfg.fill_mode).lower() == "contour":
+        # Origin 스타일 등고선(채움) 맵. 같은 colorscale·zmin/zmax·colorbar 사용.
+        # contours_coloring="fill" 로 밴드형 채움, zsmooth 는 무시된다.
+        trace = go.Contour(
+            z=arr,
+            x=x_coords,
+            y=y_coords,
+            colorscale=colorscale,
+            zmin=cfg.zmin,
+            zmax=cfg.zmax,
+            colorbar=colorbar,
+            contours_coloring="fill",
+            ncontours=15,
+            line_width=0.4,
+            hovertemplate="X=%{x}<br>Y=%{y}<br>z=%{z}<extra></extra>",
+        )
+    else:
+        trace = go.Heatmap(
+            z=arr,
+            x=x_coords,
+            y=y_coords,
+            colorscale=colorscale,
+            zmin=cfg.zmin,
+            zmax=cfg.zmax,
+            zsmooth=zsmooth,
+            colorbar=colorbar,
+            hovertemplate="X=%{x}<br>Y=%{y}<br>z=%{z}<extra></extra>",
+        )
+
+    fig = go.Figure(data=trace)
 
     xaxis = dict(
         title=dict(text=cfg.x_label,
@@ -387,16 +412,32 @@ def make_matplotlib_heatmap(
     interp = "bilinear" if str(cfg.interpolation).lower() in ("bilinear", "best") else "none"
 
     fig, ax = plt.subplots(figsize=(6, 5), dpi=dpi)
-    im = ax.imshow(
-        arr,
-        origin="upper",
-        cmap=_mpl_cmap(cfg.colormap),
-        vmin=cfg.zmin,
-        vmax=cfg.zmax,
-        extent=extent,
-        interpolation=interp,
-        aspect="equal" if cfg.lock_aspect else "auto",
-    )
+    if str(cfg.fill_mode).lower() == "contour":
+        # Origin 스타일 등고선(채움) 맵. imshow(origin='upper') 와 방향을 맞추기 위해
+        # 실제 좌표로 contourf 후 y축을 반전(row 0 = 상단)한다.
+        xc = _axis_coords(nx, cfg.step_x, cfg.x0)
+        yc = _axis_coords(ny, cfg.step_y, cfg.y0)
+        X, Y = np.meshgrid(xc, yc)
+        im = ax.contourf(
+            X, Y, arr,
+            levels=15,
+            cmap=_mpl_cmap(cfg.colormap),
+            vmin=cfg.zmin,
+            vmax=cfg.zmax,
+        )
+        ax.invert_yaxis()
+        ax.set_aspect("equal" if cfg.lock_aspect else "auto")
+    else:
+        im = ax.imshow(
+            arr,
+            origin="upper",
+            cmap=_mpl_cmap(cfg.colormap),
+            vmin=cfg.zmin,
+            vmax=cfg.zmax,
+            extent=extent,
+            interpolation=interp,
+            aspect="equal" if cfg.lock_aspect else "auto",
+        )
 
     ax.set_xlabel(cfg.x_label, fontsize=cfg.font_size_label, fontfamily=_mpl_font(cfg.font_family))
     ax.set_ylabel(cfg.y_label, fontsize=cfg.font_size_label, fontfamily=_mpl_font(cfg.font_family))

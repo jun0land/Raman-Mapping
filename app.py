@@ -43,36 +43,11 @@ APP_DIR = Path(__file__).resolve().parent
 PRESET_DIR = APP_DIR / "presets"
 PRESET_DIR.mkdir(exist_ok=True)
 
-# --- 3D 표면 양방향 카메라 동기화용 커스텀 컴포넌트 ---------------------------
-# 마우스 드래그 회전 → 슬라이더(cam_azim/elev/zoom) 동기화를 위해, Plotly.js 로
-# 표면을 직접 렌더하고 카메라 eye 를 파이썬으로 되돌려 보내는 자체 완결형 컴포넌트.
-# declare_component 는 스크립트 rerun 마다 재호출돼도 안전(이름으로 dedup)하지만,
-# 모듈 전역에 한 번만 선언되도록 가드한다. 선언이 실패해도(경로 문제 등) 앱이
-# 죽지 않도록 try/except 로 감싸고, 실패 시 3D 브랜치가 st.plotly_chart 로 폴백한다.
-try:
-    _SURFACE3D = components.declare_component(
-        "surface3d", path=str(APP_DIR / "components" / "surface3d"))
-except Exception:
-    _SURFACE3D = None
-
-
-def eye_to_azel(x: float, y: float, z: float) -> tuple[float, float, float]:
-    """Plotly scene.camera.eye(x,y,z) 를 구면 좌표(방위각·고도·거리)로 역변환한다.
-
-    plot.camera_eye 의 정확한 역함수:
-        r = sqrt(x²+y²+z²)
-        elev = degrees(asin(z/r))        (0=수평, 90=바로 위)
-        azim = degrees(atan2(y, x))       (XY 평면 회전각)
-        zoom = r
-    r=0 방어. 반환 (azim_deg, elev_deg, zoom).
-    """
-    import math
-    r = math.sqrt(float(x) * float(x) + float(y) * float(y) + float(z) * float(z))
-    if r <= 1e-12:
-        return (0.0, 0.0, 0.0)
-    elev = math.degrees(math.asin(max(-1.0, min(1.0, float(z) / r))))
-    azim = math.degrees(math.atan2(float(y), float(x)))
-    return (azim, elev, r)
+# NOTE: 3D 표면의 마우스 드래그 회전을 슬라이더로 되돌려 받던 커스텀 컴포넌트
+# (components/surface3d, Plotly.js 직접 렌더)는 렌더가 비어 나오는 문제로 폐기되었다.
+# 3D 는 이제 st.plotly_chart(make_surface(...), key="surf3d_plot") 로 렌더하며,
+# 카메라 각도는 방위각·고도·줌 슬라이더(cam_azim/cam_elev/cam_zoom)로만 제어한다.
+# 마우스 드래그 회전은 브라우저 전용(자유 관찰용)이며 슬라이더/내보내기에 반영되지 않는다.
 
 ACCENT = "#ed542b"
 COLORMAPS = ["jet", "viridis", "plasma", "inferno", "rainbow", "gray", "RdBu"]
@@ -130,6 +105,7 @@ DEFAULTS = {
     "fmt_cbarlabel": "Intensity (a.u.)", "fmt_cbarticks": 5,
     "fmt_font": "Arial", "fmt_fs_label": 14, "fmt_fs_tick": 12, "fmt_fs_title": 16,
     "fmt_interp": "none", "fmt_aspect": True,
+    "fmt_fill": "픽셀(격자)",
     # export
     "exp_dpi": 300,
     "exp_fmt": "PNG (투명)",
@@ -291,6 +267,9 @@ html, body, [class*="css"], .stApp, button, input, textarea, select {{
     border-radius: 14px; padding: 12px 16px;
     border: 1px solid rgba(255,255,255,0.4);
 }}
+/* metric 값/라벨 크기 축소 (① 데이터 정보 등 st.metric 전역) */
+[data-testid="stMetricValue"] {{ font-size: 1.5rem !important; }}
+[data-testid="stMetricLabel"] {{ font-size: 0.8rem !important; }}
 
 h1, h2, h3, h4, p, label, span {{ text-shadow: none; }}
 </style>
@@ -580,6 +559,7 @@ def build_plot_config(grid_arr: np.ndarray | None = None) -> plot.PlotConfig:
         font_family=ss.fmt_font, font_size_label=int(ss.fmt_fs_label),
         font_size_tick=int(ss.fmt_fs_tick), font_size_title=int(ss.fmt_fs_title),
         interpolation=ss.fmt_interp, lock_aspect=ss.fmt_aspect,
+        fill_mode=("contour" if ss.fmt_fill == "등고선(contour)" else "pixel"),
         cam_azim=float(ss.cam_azim), cam_elev=float(ss.cam_elev),
         cam_zoom=float(ss.cam_zoom),
     )
@@ -1132,6 +1112,10 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
         f1, f2, f3 = st.columns(3)
         with f1:
             st.selectbox("Colormap", COLORMAPS, key="fmt_cmap")
+            st.radio("2D 채우기", ["픽셀(격자)", "등고선(contour)"],
+                     key="fmt_fill", horizontal=True,
+                     help="픽셀=격자 히트맵, 등고선=Origin 스타일 컬러 컨투어 "
+                          "(2D 뷰·내보내기에만 적용, 3D 표면은 무관)")
             st.checkbox("z-range 자동 (2–98%)", key="fmt_zauto")
             if gridarr is not None:
                 st.button("현재 데이터로 auto z 적용",
@@ -1173,26 +1157,11 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
              key="view_mode", horizontal=True)
     event = None
     if ss.view_mode == "3D 표면(Surface)":
-        # --- (A) 마우스 드래그로 캡처한 카메라를 슬라이더에 반영 (위젯 생성 前!) ---
-        # 컴포넌트는 사용자 드래그 시 eye 를 ss["_surf_pending_cam"] 에 남기고 rerun 을
-        # 요청한다. 슬라이더(cam_azim/elev/zoom) 위젯 key 는 인스턴스화 이후에는 수정할
-        # 수 없으므로(StreamlitAPIException), 반드시 슬라이더를 만들기 전인 이 지점에서
-        # pending eye → (azim,elev,zoom) 로 역변환해 슬라이더 값으로 적용한다.
-        _pending = ss.pop("_surf_pending_cam", None)
-        if isinstance(_pending, dict):
-            try:
-                _az, _el, _zm = eye_to_azel(_pending.get("x", 0.0),
-                                            _pending.get("y", 0.0),
-                                            _pending.get("z", 0.0))
-                ss.cam_azim = float(max(-180.0, min(180.0, _az)))
-                ss.cam_elev = float(max(0.0, min(90.0, _el)))
-                ss.cam_zoom = float(max(1.2, min(4.0, _zm)))
-            except Exception:
-                pass
-
         st.markdown("**3D 컬러맵 표면** — 방위각·고도·줌 슬라이더로 각도를 잡습니다. "
                     "마우스 드래그는 자유 관찰용입니다. (colormap·z-range·라벨·폰트 서식이 "
                     "그대로 적용됩니다. 스펙트럼 QC는 아래 X/Y 픽셀 입력을 사용하세요.)")
+        st.caption("🖱️ 마우스 드래그로 돌린 각도는 위 슬라이더·내보내기에 반영되지 "
+                   "않습니다(자유 관찰용). 저장할 각도는 슬라이더·프리셋으로 맞추세요.")
         # 카메라 컨트롤 — 화면 == export 각도 동기화 (make_surface 가 이 값으로 eye 계산)
         cca = st.columns(3)
         cca[0].slider("방위각 azimuth (°)", -180.0, 180.0, step=1.0, key="cam_azim")
@@ -1214,12 +1183,20 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
         surf_fig = plot.make_surface(gridarr, pcfg)
         st.plotly_chart(surf_fig, use_container_width=True, key="surf3d_plot")
     else:
-        st.markdown("**최종 히트맵** — 픽셀을 클릭하면 아래에 원본 스펙트럼이 표시됩니다. "
-                    "(방향/서식 변경이 이 뷰에 실시간 반영됩니다.)")
         final_fig = plot.make_heatmap(gridarr, pcfg)
-        event = st.plotly_chart(final_fig, use_container_width=True,
-                                key="final_heatmap", on_select="rerun",
-                                selection_mode=("points", "box"))
+        if ss.fmt_fill == "등고선(contour)":
+            # go.Contour 는 클릭 포인트 이벤트가 불안정하므로 on_select 를 걸지 않고,
+            # 스펙트럼 QC 는 아래 X/Y 픽셀 입력(폴백)으로 처리한다.
+            st.markdown("**최종 컨투어 맵** — 등고선(채움) 렌더. 스펙트럼 QC 는 아래 "
+                        "X/Y 픽셀 입력을 사용하세요. (방향/서식 변경이 실시간 반영됩니다.)")
+            st.plotly_chart(final_fig, use_container_width=True,
+                            key="final_contour")
+        else:
+            st.markdown("**최종 히트맵** — 픽셀을 클릭하면 아래에 원본 스펙트럼이 표시됩니다. "
+                        "(방향/서식 변경이 이 뷰에 실시간 반영됩니다.)")
+            event = st.plotly_chart(final_fig, use_container_width=True,
+                                    key="final_heatmap", on_select="rerun",
+                                    selection_mode=("points", "box"))
 
     # (레거시) 예전 사이드바 Export 가 읽던 최신 값. 이제 이미지/매트릭스 export 는
     # 바로 아래 프래그먼트 내부에서 gridarr/pcfg/ss.view_mode 를 직접 사용하므로
@@ -1319,6 +1296,28 @@ with tab_map:
         # ---- 전처리 ----
         section("② 전처리 (선택)", "cosmic · baseline · smoothing · normalize")
         with st.expander("전처리 옵션 펼치기", expanded=False):
+            # --- Baseline 보정: 전체 너비 (긴 ALS 경고 캡션이 반 폭에 눌리지 않도록) ---
+            st.markdown("**Baseline 보정**")
+            st.selectbox("Baseline 보정", ["off", "als", "poly"],
+                         key="pp_baseline", label_visibility="collapsed")
+            st.caption("⚠️ ALS는 400 스펙트럼에 약 4초 걸립니다(가장 무거운 단계). "
+                       "빠른 작업은 off 또는 poly 를 권장합니다. 동일 설정은 캐시되어 "
+                       "재계산 없이 즉시 반영됩니다.")
+            if st.session_state.pp_baseline == "als":
+                ba1, ba2, ba3 = st.columns(3)
+                ba1.number_input("ALS λ (lam)", min_value=1.0,
+                                 step=1000.0, key="pp_als_lam", format="%.0f")
+                ba2.number_input("ALS p", min_value=0.0001, max_value=0.5,
+                                 step=0.001, key="pp_als_p", format="%.4f")
+                ba3.number_input("ALS niter", min_value=1, max_value=50,
+                                 step=1, key="pp_als_niter")
+            elif st.session_state.pp_baseline == "poly":
+                st.number_input("다항식 차수", min_value=0, max_value=15,
+                                step=1, key="pp_poly_order")
+
+            st.divider()
+
+            # --- 나머지 전처리(Cosmic / Smoothing / Normalization): 2열 ---
             c1, c2 = st.columns(2)
             with c1:
                 st.checkbox("Cosmic ray 제거", key="pp_cosmic")
@@ -1327,21 +1326,11 @@ with tab_map:
                                     max_value=20.0, step=0.5, key="pp_cosmic_thr")
                     st.number_input("window (홀수)", min_value=3, max_value=51,
                                     step=2, key="pp_cosmic_win")
-                st.selectbox("Baseline 보정", ["off", "als", "poly"],
-                             key="pp_baseline")
-                st.caption("⚠️ ALS는 400 스펙트럼에 약 4초 걸립니다(가장 무거운 단계). "
-                           "빠른 작업은 off 또는 poly 를 권장합니다. 동일 설정은 캐시되어 "
-                           "재계산 없이 즉시 반영됩니다.")
-                if st.session_state.pp_baseline == "als":
-                    st.number_input("ALS λ (lam)", min_value=1.0,
-                                    step=1000.0, key="pp_als_lam", format="%.0f")
-                    st.number_input("ALS p", min_value=0.0001, max_value=0.5,
-                                    step=0.001, key="pp_als_p", format="%.4f")
-                    st.number_input("ALS niter", min_value=1, max_value=50,
-                                    step=1, key="pp_als_niter")
-                elif st.session_state.pp_baseline == "poly":
-                    st.number_input("다항식 차수", min_value=0, max_value=15,
-                                    step=1, key="pp_poly_order")
+                st.selectbox("Normalization", ["off", "max", "peak"],
+                             key="pp_norm")
+                if st.session_state.pp_norm == "peak":
+                    st.number_input("기준 파수 (cm⁻¹)", min_value=wmin,
+                                    max_value=wmax, step=1.0, key="pp_norm_peak")
             with c2:
                 st.checkbox("Savitzky-Golay 평활", key="pp_smooth")
                 if st.session_state.pp_smooth:
@@ -1349,11 +1338,6 @@ with tab_map:
                                     step=2, key="pp_smooth_win")
                     st.number_input("polyorder", min_value=0, max_value=10,
                                     step=1, key="pp_smooth_poly")
-                st.selectbox("Normalization", ["off", "max", "peak"],
-                             key="pp_norm")
-                if st.session_state.pp_norm == "peak":
-                    st.number_input("기준 파수 (cm⁻¹)", min_value=wmin,
-                                    max_value=wmax, step=1.0, key="pp_norm_peak")
 
         st.divider()
 
