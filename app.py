@@ -869,24 +869,19 @@ def _set_camera(azim: float, elev: float, zoom: float):
 
 with st.sidebar:
     st.divider()
-    with st.expander("💾 Export (설정 · 해상도)", expanded=False):
+    with st.expander("🖼️ 내보내기 설정 (해상도)", expanded=False):
         # 이미지·매트릭스 내보내기 UI 는 렌더 프래그먼트(최종 뷰 하단)로 이동했다.
         # 이유: view_mode 라디오·카메라 슬라이더가 @st.fragment 안에 있어 그 변경은
         # 프래그먼트-스코프 rerun 만 유발한다. export UI 가 사이드바(프래그먼트 밖)에
         # 있으면 재실행되지 않아 이전 뷰의 바이트/caption 을 그대로 들고 있게 되어
         # 2D↔3D 가 뒤바뀌고 caption 이 stale 해진다. 프래그먼트 안으로 옮기면
         # 같은 rerun 에서 gridarr/pcfg/ss.view_mode 를 직접 읽어 항상 화면과 일치한다.
-        # 여기 남는 DPI·설정 JSON 은 session_state 만 읽으므로 언제나 최신이다.
+        # (설정 JSON 다운로드는 프리셋 저장·다운로드와 중복이라 제거했다.)
         st.number_input("PNG/JPG 해상도(DPI)", min_value=72, max_value=1200,
                         step=50, key="exp_dpi")
         st.caption("🖼️ 이미지 · 📊 매트릭스 내보내기는 아래 **최종 뷰(플롯) 하단**에서 "
-                   "현재 화면 뷰(2D/3D) 기준으로 제공됩니다.")
-        st.download_button(
-            "🧾 설정 JSON",
-            json.dumps(full_settings_dict(), ensure_ascii=False, indent=2)
-            .encode("utf-8"),
-            "raman_settings.json", "application/json",
-            use_container_width=True)
+                   "현재 화면 뷰(2D/3D) 기준으로 제공됩니다. 설정 저장/공유는 아래 "
+                   "**프리셋**을 이용하세요.")
 
     with st.expander("📌 프리셋 (방향/서식 저장·불러오기)", expanded=False):
         pname = st.text_input("프리셋 이름", key="preset_name",
