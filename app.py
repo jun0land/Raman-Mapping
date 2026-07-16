@@ -1133,8 +1133,9 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
                             key="fmt_stepy", format="%.4g")
         with f3:
             st.text_input("Colorbar 라벨", key="fmt_cbarlabel")
-            st.number_input("Colorbar tick 개수", min_value=2, max_value=15,
+            st.number_input("Colorbar tick 개수", min_value=2, max_value=40,
                             step=1, key="fmt_cbarticks")
+            st.caption("값을 높이면 colorbar·컨투어가 더 연속적으로 보입니다.")
             st.selectbox("폰트", FONTS, key="fmt_font")
             fs1, fs2, fs3 = st.columns(3)
             fs1.number_input("라벨", min_value=6, max_value=40, key="fmt_fs_label")

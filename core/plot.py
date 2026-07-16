@@ -260,6 +260,34 @@ def _tickvals(coords: np.ndarray, spacing: Optional[float]) -> Optional[list[flo
     return [float(t) for t in ticks]
 
 
+def _colorbar_ticks(zmin: Optional[float], zmax: Optional[float], n: int) -> dict:
+    """Plotly colorbar 에 병합할 눈금 설정 dict 를 반환한다.
+
+    Plotly 의 ``colorbar.nticks`` 는 최댓값 힌트일 뿐이고 "예쁜 숫자"로 반올림하기
+    때문에 사용자가 요청한 정확한 개수가 반영되지 않는다. 유한한 (zmin, zmax)
+    범위가 주어지면 ``np.linspace`` 로 정확히 n 개의 등간격 눈금(tickvals)을
+    직접 지정해 요청 개수를 그대로 반영한다.
+
+    Args:
+        zmin, zmax: colorbar 값 범위. None/비유한/degenerate 면 폴백.
+        n: 원하는 눈금 개수(>=2).
+
+    Returns:
+        colorbar config 에 병합할 dict. 유효 범위면
+        ``dict(tickmode="array", tickvals=[...], nticks=n, tickformat=".3g")``,
+        아니면 ``dict(nticks=n)``.
+    """
+    n = max(int(n), 2)
+    finite = (
+        zmin is not None and zmax is not None
+        and np.isfinite(zmin) and np.isfinite(zmax) and zmax > zmin
+    )
+    if finite:
+        tickvals = [float(v) for v in np.linspace(float(zmin), float(zmax), n)]
+        return dict(tickmode="array", tickvals=tickvals, nticks=n, tickformat=".3g")
+    return dict(nticks=n)
+
+
 # ---------------------------------------------------------------------------
 # Plotly heatmap
 # ---------------------------------------------------------------------------
@@ -289,18 +317,28 @@ def make_heatmap(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
     zsmooth = "best" if str(cfg.interpolation).lower() in ("bilinear", "best") else False
 
     colorscale = _plotly_colorscale(cfg.colormap)
+
+    # 유효 z-range 결정(cfg 우선, 없으면 데이터 min/max). 이 범위로 colorbar 눈금
+    # 개수를 정확히 지정한다(픽셀·컨투어 동일).
+    zmin_eff = cfg.zmin if cfg.zmin is not None else float(np.nanmin(arr))
+    zmax_eff = cfg.zmax if cfg.zmax is not None else float(np.nanmax(arr))
+    if not (np.isfinite(zmin_eff) and np.isfinite(zmax_eff) and zmax_eff > zmin_eff):
+        zmin_eff = zmax_eff = None
+
     colorbar = dict(
         title=dict(
             text=cfg.colorbar_label,
             font=dict(family=_plotly_font(cfg.font_family), size=cfg.font_size_label),
         ),
-        nticks=int(cfg.colorbar_ticks),
         tickfont=dict(family=_plotly_font(cfg.font_family), size=cfg.font_size_tick),
     )
+    colorbar.update(_colorbar_ticks(zmin_eff, zmax_eff, int(cfg.colorbar_ticks)))
 
     if str(cfg.fill_mode).lower() == "contour":
-        # Origin 스타일 등고선(채움) 맵. 같은 colorscale·zmin/zmax·colorbar 사용.
-        # contours_coloring="fill" 로 밴드형 채움, zsmooth 는 무시된다.
+        # Origin 스타일 컬러 컨투어 맵. 픽셀 히트맵·3D 표면과 동일하게 "연속적으로"
+        # 보이도록 contours_coloring="heatmap"(색을 보간해 연속 채움)을 사용하고,
+        # 얇은 등고선(line_width~0.5)과 촘촘한 ncontours 로 부드러운 컨투어 라인을
+        # 겹쳐 등고선 맵의 성격은 유지한다. colorbar 는 연속 그라데이션이 된다.
         trace = go.Contour(
             z=arr,
             x=x_coords,
@@ -309,9 +347,10 @@ def make_heatmap(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
             zmin=cfg.zmin,
             zmax=cfg.zmax,
             colorbar=colorbar,
-            contours_coloring="fill",
-            ncontours=15,
-            line_width=0.4,
+            contours_coloring="heatmap",
+            ncontours=24,
+            line_width=0.5,
+            showscale=True,
             hovertemplate="X=%{x}<br>Y=%{y}<br>z=%{z}<extra></extra>",
         )
     else:
@@ -418,13 +457,26 @@ def make_matplotlib_heatmap(
         xc = _axis_coords(nx, cfg.step_x, cfg.x0)
         yc = _axis_coords(ny, cfg.step_y, cfg.y0)
         X, Y = np.meshgrid(xc, yc)
+        # 화면(Plotly contours_coloring="heatmap")의 연속 채움과 시각적으로 맞추기
+        # 위해 촘촘한 level(60)로 contourf 를 그려 연속처럼 보이게 하고, 얇은 등고선을
+        # 겹쳐 컨투어 맵 성격을 유지한다.
         im = ax.contourf(
             X, Y, arr,
-            levels=15,
+            levels=60,
             cmap=_mpl_cmap(cfg.colormap),
             vmin=cfg.zmin,
             vmax=cfg.zmax,
         )
+        try:
+            ax.contour(
+                X, Y, arr,
+                levels=12,
+                colors="k",
+                linewidths=0.4,
+                alpha=0.35,
+            )
+        except Exception:
+            pass
         ax.invert_yaxis()
         ax.set_aspect("equal" if cfg.lock_aspect else "auto")
     else:
@@ -465,10 +517,10 @@ def make_matplotlib_heatmap(
     cbar.set_label(cfg.colorbar_label, fontsize=cfg.font_size_label,
                    fontfamily=_mpl_font(cfg.font_family))
     cbar.ax.tick_params(labelsize=cfg.font_size_tick)
-    # colorbar 눈금 개수
+    # colorbar 눈금 개수(정확한 등간격) — plotly 와 일치하도록 LinearLocator 사용.
     try:
-        from matplotlib.ticker import MaxNLocator
-        cbar.locator = MaxNLocator(nbins=int(cfg.colorbar_ticks))
+        from matplotlib.ticker import LinearLocator
+        cbar.locator = LinearLocator(numticks=int(cfg.colorbar_ticks))
         cbar.update_ticks()
     except Exception:
         pass
@@ -519,6 +571,20 @@ def make_surface(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
     y_coords = _axis_coords(ny, cfg.step_y, cfg.y0)
 
     fam = _plotly_font(cfg.font_family)
+
+    # 유효 z-range 결정(2D 히트맵과 동일 규약) → colorbar 눈금 개수 정확 지정.
+    zmin_eff = cfg.zmin if cfg.zmin is not None else float(np.nanmin(arr))
+    zmax_eff = cfg.zmax if cfg.zmax is not None else float(np.nanmax(arr))
+    if not (np.isfinite(zmin_eff) and np.isfinite(zmax_eff) and zmax_eff > zmin_eff):
+        zmin_eff = zmax_eff = None
+
+    surf_colorbar = dict(
+        title=dict(text=cfg.colorbar_label,
+                   font=dict(family=fam, size=cfg.font_size_label)),
+        tickfont=dict(family=fam, size=cfg.font_size_tick),
+    )
+    surf_colorbar.update(_colorbar_ticks(zmin_eff, zmax_eff, int(cfg.colorbar_ticks)))
+
     surface = go.Surface(
         z=arr,
         x=x_coords,
@@ -526,12 +592,7 @@ def make_surface(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
         colorscale=_plotly_colorscale(cfg.colormap),
         cmin=cfg.zmin,
         cmax=cfg.zmax,
-        colorbar=dict(
-            title=dict(text=cfg.colorbar_label,
-                       font=dict(family=fam, size=cfg.font_size_label)),
-            nticks=int(cfg.colorbar_ticks),
-            tickfont=dict(family=fam, size=cfg.font_size_tick),
-        ),
+        colorbar=surf_colorbar,
         hovertemplate="X=%{x}<br>Y=%{y}<br>z=%{z}<extra></extra>",
     )
 
@@ -635,8 +696,8 @@ def make_matplotlib_surface(
     cbar.set_label(cfg.colorbar_label, fontsize=cfg.font_size_label, fontfamily=fam)
     cbar.ax.tick_params(labelsize=cfg.font_size_tick)
     try:
-        from matplotlib.ticker import MaxNLocator
-        cbar.locator = MaxNLocator(nbins=int(cfg.colorbar_ticks))
+        from matplotlib.ticker import LinearLocator
+        cbar.locator = LinearLocator(numticks=int(cfg.colorbar_ticks))
         cbar.update_ticks()
     except Exception:
         pass
