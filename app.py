@@ -104,6 +104,9 @@ DEFAULTS = {
     "fmt_showticks": True, "fmt_tickspacing": 0.0,
     "fmt_cbarlabel": "Intensity (a.u.)", "fmt_cbarticks": 5,
     "fmt_font": "Arial", "fmt_fs_label": 14, "fmt_fs_tick": 12, "fmt_fs_title": 16,
+    "fmt_bold_label": False, "fmt_italic_label": False, "fmt_color_label": "#000000",
+    "fmt_bold_tick": False, "fmt_italic_tick": False, "fmt_color_tick": "#000000",
+    "fmt_bold_title": False, "fmt_italic_title": False, "fmt_color_title": "#000000",
     "fmt_interp": "none", "fmt_aspect": True,
     "fmt_fill": "픽셀(격자)",
     # export
@@ -558,6 +561,12 @@ def build_plot_config(grid_arr: np.ndarray | None = None) -> plot.PlotConfig:
         colorbar_label=ss.fmt_cbarlabel, colorbar_ticks=int(ss.fmt_cbarticks),
         font_family=ss.fmt_font, font_size_label=int(ss.fmt_fs_label),
         font_size_tick=int(ss.fmt_fs_tick), font_size_title=int(ss.fmt_fs_title),
+        font_bold_label=ss.fmt_bold_label, font_italic_label=ss.fmt_italic_label,
+        font_color_label=ss.fmt_color_label,
+        font_bold_tick=ss.fmt_bold_tick, font_italic_tick=ss.fmt_italic_tick,
+        font_color_tick=ss.fmt_color_tick,
+        font_bold_title=ss.fmt_bold_title, font_italic_title=ss.fmt_italic_title,
+        font_color_title=ss.fmt_color_title,
         interpolation=ss.fmt_interp, lock_aspect=ss.fmt_aspect,
         fill_mode=("contour" if ss.fmt_fill == "등고선(contour)" else "pixel"),
         cam_azim=float(ss.cam_azim), cam_elev=float(ss.cam_elev),
@@ -1137,10 +1146,19 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
                             step=1, key="fmt_cbarticks")
             st.caption("값을 높이면 colorbar·컨투어가 더 연속적으로 보입니다.")
             st.selectbox("폰트", FONTS, key="fmt_font")
-            fs1, fs2, fs3 = st.columns(3)
-            fs1.number_input("라벨", min_value=6, max_value=40, key="fmt_fs_label")
-            fs2.number_input("눈금", min_value=6, max_value=40, key="fmt_fs_tick")
-            fs3.number_input("제목", min_value=6, max_value=40, key="fmt_fs_title")
+            st.caption("위첨자 `^{ }`, 아래첨자 `_{ }`  예: `cm^{-1}`, `µm_{2}`")
+            for _lbl, _sz, _bd, _it, _col in [
+                ("라벨", "fmt_fs_label", "fmt_bold_label", "fmt_italic_label", "fmt_color_label"),
+                ("눈금", "fmt_fs_tick", "fmt_bold_tick", "fmt_italic_tick", "fmt_color_tick"),
+                ("제목", "fmt_fs_title", "fmt_bold_title", "fmt_italic_title", "fmt_color_title"),
+            ]:
+                _r = st.columns([1.1, 1.2, 0.7, 0.7, 1.1])
+                _r[0].markdown(f"**{_lbl}**")
+                _r[1].number_input("크기", min_value=6, max_value=40, key=_sz,
+                                   label_visibility="collapsed")
+                _r[2].checkbox("B", key=_bd)
+                _r[3].checkbox("I", key=_it)
+                _r[4].color_picker("색", key=_col, label_visibility="collapsed")
             st.checkbox("눈금 표시", key="fmt_showticks")
             st.number_input("눈금 간격 (μm, 0=자동)", min_value=0.0, step=1.0,
                             key="fmt_tickspacing")

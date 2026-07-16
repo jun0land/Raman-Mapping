@@ -11,6 +11,7 @@ export 처리). Streamlit 등 UI 의존성 없음. 순수 함수. 입력 grid는
 from __future__ import annotations
 
 import functools
+import re
 from dataclasses import dataclass, field
 from math import cos, radians, sin
 from typing import Optional
@@ -133,6 +134,52 @@ def _mpl_font(name: Optional[str]) -> list[str]:
     return fam
 
 
+def apply_text_markup(text: str, target: str) -> str:
+    """'^{...}'/'_{...}' 마크업을 렌더러 문법으로 변환.
+
+    target="plotly": '^{x}'->'<sup>x</sup>', '_{x}'->'<sub>x</sub>'
+    target="mpl"   : '^{x}'->'$^{x}$',       '_{x}'->'$_{x}$'
+    마크업이 없으면 원문을 그대로 반환한다(mpl에 불필요한 '$' 미삽입).
+    미종료(예: 'cm^{-1')는 매칭되지 않아 원문 유지. 맨 '^'·'_'는 리터럴.
+    """
+    if not text:
+        return text
+    if target == "plotly":
+        text = re.sub(r"\^\{([^}]*)\}", r"<sup>\1</sup>", text)
+        text = re.sub(r"_\{([^}]*)\}", r"<sub>\1</sub>", text)
+    else:  # mpl
+        text = re.sub(r"\^\{([^}]*)\}", r"$^{\1}$", text)
+        text = re.sub(r"_\{([^}]*)\}", r"$_{\1}$", text)
+    return text
+
+
+# 요소(label/tick/title)별 크기 속성 이름
+_ELEM_SIZE_ATTR = {"label": "font_size_label", "tick": "font_size_tick",
+                   "title": "font_size_title"}
+
+
+def _plotly_font_dict(cfg: "PlotConfig", elem: str) -> dict:
+    """요소(label/tick/title)별 plotly 폰트 dict (family,size,color,weight,style)."""
+    return dict(
+        family=_plotly_font(cfg.font_family),
+        size=getattr(cfg, _ELEM_SIZE_ATTR[elem]),
+        color=getattr(cfg, f"font_color_{elem}"),
+        weight="bold" if getattr(cfg, f"font_bold_{elem}") else "normal",
+        style="italic" if getattr(cfg, f"font_italic_{elem}") else "normal",
+    )
+
+
+def _mpl_font_kw(cfg: "PlotConfig", elem: str) -> dict:
+    """요소별 matplotlib 텍스트 kwargs (fontsize,fontfamily,color,fontweight,fontstyle)."""
+    return dict(
+        fontsize=getattr(cfg, _ELEM_SIZE_ATTR[elem]),
+        fontfamily=_mpl_font(cfg.font_family),
+        color=getattr(cfg, f"font_color_{elem}"),
+        fontweight="bold" if getattr(cfg, f"font_bold_{elem}") else "normal",
+        fontstyle="italic" if getattr(cfg, f"font_italic_{elem}") else "normal",
+    )
+
+
 # ---------------------------------------------------------------------------
 # PlotConfig
 # ---------------------------------------------------------------------------
@@ -205,6 +252,16 @@ class PlotConfig:
     font_size_label: int = 14
     font_size_tick: int = 12
     font_size_title: int = 16
+    # 요소별 굵기/기울기/색 (Origin 스타일)
+    font_bold_label: bool = False
+    font_italic_label: bool = False
+    font_color_label: str = "#000000"
+    font_bold_tick: bool = False
+    font_italic_tick: bool = False
+    font_color_tick: str = "#000000"
+    font_bold_title: bool = False
+    font_italic_title: bool = False
+    font_color_title: str = "#000000"
 
     # 렌더링
     interpolation: str = "none"
@@ -327,10 +384,10 @@ def make_heatmap(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
 
     colorbar = dict(
         title=dict(
-            text=cfg.colorbar_label,
-            font=dict(family=_plotly_font(cfg.font_family), size=cfg.font_size_label),
+            text=apply_text_markup(cfg.colorbar_label, "plotly"),
+            font=_plotly_font_dict(cfg, "label"),
         ),
-        tickfont=dict(family=_plotly_font(cfg.font_family), size=cfg.font_size_tick),
+        tickfont=_plotly_font_dict(cfg, "tick"),
     )
     colorbar.update(_colorbar_ticks(zmin_eff, zmax_eff, int(cfg.colorbar_ticks)))
 
@@ -388,17 +445,17 @@ def make_heatmap(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
     fig = go.Figure(data=trace)
 
     xaxis = dict(
-        title=dict(text=cfg.x_label,
-                   font=dict(family=_plotly_font(cfg.font_family), size=cfg.font_size_label)),
-        tickfont=dict(family=_plotly_font(cfg.font_family), size=cfg.font_size_tick),
+        title=dict(text=apply_text_markup(cfg.x_label, "plotly"),
+                   font=_plotly_font_dict(cfg, "label")),
+        tickfont=_plotly_font_dict(cfg, "tick"),
         showticklabels=cfg.show_ticks,
         ticks="outside" if cfg.show_ticks else "",
         constrain="domain",
     )
     yaxis = dict(
-        title=dict(text=cfg.y_label,
-                   font=dict(family=_plotly_font(cfg.font_family), size=cfg.font_size_label)),
-        tickfont=dict(family=_plotly_font(cfg.font_family), size=cfg.font_size_tick),
+        title=dict(text=apply_text_markup(cfg.y_label, "plotly"),
+                   font=_plotly_font_dict(cfg, "label")),
+        tickfont=_plotly_font_dict(cfg, "tick"),
         showticklabels=cfg.show_ticks,
         ticks="outside" if cfg.show_ticks else "",
         # row 0 이 상단에 오도록 y축 역방향 (이미지 규약)
@@ -421,8 +478,8 @@ def make_heatmap(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
         yaxis["scaleratio"] = 1
 
     fig.update_layout(
-        title=dict(text=cfg.title,
-                   font=dict(family=_plotly_font(cfg.font_family), size=cfg.font_size_title)),
+        title=dict(text=apply_text_markup(cfg.title, "plotly"),
+                   font=_plotly_font_dict(cfg, "title")),
         xaxis=xaxis,
         yaxis=yaxis,
         font=dict(family=_plotly_font(cfg.font_family)),
@@ -511,14 +568,17 @@ def make_matplotlib_heatmap(
             aspect="equal" if cfg.lock_aspect else "auto",
         )
 
-    ax.set_xlabel(cfg.x_label, fontsize=cfg.font_size_label, fontfamily=_mpl_font(cfg.font_family))
-    ax.set_ylabel(cfg.y_label, fontsize=cfg.font_size_label, fontfamily=_mpl_font(cfg.font_family))
+    ax.set_xlabel(apply_text_markup(cfg.x_label, "mpl"), **_mpl_font_kw(cfg, "label"))
+    ax.set_ylabel(apply_text_markup(cfg.y_label, "mpl"), **_mpl_font_kw(cfg, "label"))
     if cfg.title:
-        ax.set_title(cfg.title, fontsize=cfg.font_size_title, fontfamily=_mpl_font(cfg.font_family))
+        ax.set_title(apply_text_markup(cfg.title, "mpl"), **_mpl_font_kw(cfg, "title"))
 
-    ax.tick_params(labelsize=cfg.font_size_tick)
+    tick_kw = _mpl_font_kw(cfg, "tick")
+    ax.tick_params(labelsize=tick_kw["fontsize"], labelcolor=tick_kw["color"])
     for lbl in ax.get_xticklabels() + ax.get_yticklabels():
-        lbl.set_fontfamily(_mpl_font(cfg.font_family))
+        lbl.set_fontfamily(tick_kw["fontfamily"])
+        lbl.set_fontweight(tick_kw["fontweight"])
+        lbl.set_fontstyle(tick_kw["fontstyle"])
 
     if not cfg.show_ticks:
         ax.set_xticks([])
@@ -534,9 +594,9 @@ def make_matplotlib_heatmap(
             ax.set_yticks(yt)
 
     cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label(cfg.colorbar_label, fontsize=cfg.font_size_label,
-                   fontfamily=_mpl_font(cfg.font_family))
-    cbar.ax.tick_params(labelsize=cfg.font_size_tick)
+    cbar.set_label(apply_text_markup(cfg.colorbar_label, "mpl"),
+                   **_mpl_font_kw(cfg, "label"))
+    cbar.ax.tick_params(labelsize=tick_kw["fontsize"], labelcolor=tick_kw["color"])
     # colorbar 눈금 개수(정확한 등간격) — plotly 와 일치하도록 LinearLocator 사용.
     try:
         from matplotlib.ticker import LinearLocator
@@ -599,9 +659,9 @@ def make_surface(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
         zmin_eff = zmax_eff = None
 
     surf_colorbar = dict(
-        title=dict(text=cfg.colorbar_label,
-                   font=dict(family=fam, size=cfg.font_size_label)),
-        tickfont=dict(family=fam, size=cfg.font_size_tick),
+        title=dict(text=apply_text_markup(cfg.colorbar_label, "plotly"),
+                   font=_plotly_font_dict(cfg, "label")),
+        tickfont=_plotly_font_dict(cfg, "tick"),
     )
     surf_colorbar.update(_colorbar_ticks(zmin_eff, zmax_eff, int(cfg.colorbar_ticks)))
 
@@ -618,17 +678,18 @@ def make_surface(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
 
     fig = go.Figure(data=surface)
 
-    axis_font = dict(family=fam, size=cfg.font_size_label)
-    tick_font = dict(family=fam, size=cfg.font_size_tick)
-
     scene = dict(
-        xaxis=dict(title=dict(text=cfg.x_label, font=axis_font),
-                   tickfont=tick_font, showticklabels=cfg.show_ticks),
-        yaxis=dict(title=dict(text=cfg.y_label, font=axis_font),
-                   tickfont=tick_font, showticklabels=cfg.show_ticks,
-                   autorange="reversed"),
-        zaxis=dict(title=dict(text=cfg.colorbar_label, font=axis_font),
-                   tickfont=tick_font),
+        xaxis=dict(title=dict(text=apply_text_markup(cfg.x_label, "plotly"),
+                              font=_plotly_font_dict(cfg, "label")),
+                   tickfont=_plotly_font_dict(cfg, "tick"),
+                   showticklabels=cfg.show_ticks),
+        yaxis=dict(title=dict(text=apply_text_markup(cfg.y_label, "plotly"),
+                              font=_plotly_font_dict(cfg, "label")),
+                   tickfont=_plotly_font_dict(cfg, "tick"),
+                   showticklabels=cfg.show_ticks, autorange="reversed"),
+        zaxis=dict(title=dict(text=apply_text_markup(cfg.colorbar_label, "plotly"),
+                              font=_plotly_font_dict(cfg, "label")),
+                   tickfont=_plotly_font_dict(cfg, "tick")),
         # 마우스 드래그(자유 시점)는 서버로 전달되지 않으므로, 화면·export 각도를
         # 일치시키기 위해 카메라를 구면 좌표(cam_azim/cam_elev/cam_zoom)로 계산한다.
         camera=dict(eye=camera_eye(cfg.cam_azim, cfg.cam_elev, cfg.cam_zoom)),
@@ -645,7 +706,8 @@ def make_surface(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
         scene["aspectmode"] = "cube"
 
     fig.update_layout(
-        title=dict(text=cfg.title, font=dict(family=fam, size=cfg.font_size_title)),
+        title=dict(text=apply_text_markup(cfg.title, "plotly"),
+                   font=_plotly_font_dict(cfg, "title")),
         scene=scene,
         font=dict(family=fam),
         margin=dict(l=10, r=10, t=50 if cfg.title else 20, b=10),
@@ -700,12 +762,13 @@ def make_matplotlib_surface(
         linewidth=0, antialiased=True,
     )
 
-    ax.set_xlabel(cfg.x_label, fontsize=cfg.font_size_label, fontfamily=fam)
-    ax.set_ylabel(cfg.y_label, fontsize=cfg.font_size_label, fontfamily=fam)
-    ax.set_zlabel(cfg.colorbar_label, fontsize=cfg.font_size_label, fontfamily=fam)
+    ax.set_xlabel(apply_text_markup(cfg.x_label, "mpl"), **_mpl_font_kw(cfg, "label"))
+    ax.set_ylabel(apply_text_markup(cfg.y_label, "mpl"), **_mpl_font_kw(cfg, "label"))
+    ax.set_zlabel(apply_text_markup(cfg.colorbar_label, "mpl"), **_mpl_font_kw(cfg, "label"))
     if cfg.title:
-        ax.set_title(cfg.title, fontsize=cfg.font_size_title, fontfamily=fam)
-    ax.tick_params(labelsize=cfg.font_size_tick)
+        ax.set_title(apply_text_markup(cfg.title, "mpl"), **_mpl_font_kw(cfg, "title"))
+    tick_kw = _mpl_font_kw(cfg, "tick")
+    ax.tick_params(labelsize=tick_kw["fontsize"], labelcolor=tick_kw["color"])
     # 히트맵(row 0 = 상단)과 방향 일치: y축 반전
     ax.invert_yaxis()
     if not cfg.show_ticks:
@@ -713,8 +776,9 @@ def make_matplotlib_surface(
         ax.set_yticks([])
 
     cbar = fig.colorbar(surf, ax=ax, shrink=0.6, pad=0.1)
-    cbar.set_label(cfg.colorbar_label, fontsize=cfg.font_size_label, fontfamily=fam)
-    cbar.ax.tick_params(labelsize=cfg.font_size_tick)
+    cbar.set_label(apply_text_markup(cfg.colorbar_label, "mpl"),
+                   **_mpl_font_kw(cfg, "label"))
+    cbar.ax.tick_params(labelsize=tick_kw["fontsize"], labelcolor=tick_kw["color"])
     try:
         from matplotlib.ticker import LinearLocator
         cbar.locator = LinearLocator(numticks=int(cfg.colorbar_ticks))
