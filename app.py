@@ -939,7 +939,7 @@ with st.sidebar:
         existing = ["—"] + sorted(p.name for p in PRESET_DIR.glob("*.json"))
         st.selectbox("불러올 프리셋", existing, key="preset_select")
         pa, pd_ = st.columns(2)
-        pa.button("프리셋 적용", use_container_width=True,
+        pa.button("적용", use_container_width=True,
                   on_click=_preset_load_callback)
         pd_.button("🗑️ 삭제", use_container_width=True,
                    on_click=_preset_delete_callback)
