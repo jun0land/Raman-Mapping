@@ -1,0 +1,153 @@
+<!--
+  surface3d — 자체 완결형(self-contained) Streamlit 커스텀 컴포넌트.
+
+  npm/React 빌드 없이 "bare" Streamlit 컴포넌트 postMessage 프로토콜을 구현한다.
+  - 로드 시 parent 로 streamlit:componentReady(apiVersion 1) + streamlit:setFrameHeight 전송.
+  - streamlit:render 수신 시 args.figure(Plotly figure dict) 를 Plotly.react 로 렌더.
+  - 사용자가 마우스로 회전(drag-release)하면 plotly_relayout 에서 scene.camera.eye 를
+    읽어 streamlit:setComponentValue 로 되돌려 보낸다(파이썬이 슬라이더를 갱신).
+  - 피드백 루프 방지: 파이썬이 슬라이더 값으로 다시 렌더(programmatic)할 때도
+    plotly_relayout 이 발생하므로, applyingProgrammatic 플래그 + eye epsilon 비교로
+    "진짜 사용자 드래그"일 때만 값을 post 한다.
+  - Plotly.js 는 CDN 없이 로컬(plotly.min.js)에서 로드(배포 CSP/오프라인 안전).
+-->
+<script src="plotly.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  #surf { width: 100%; height: 600px; }
+  #surf-err {
+    font-family: -apple-system, Arial, sans-serif; color: #c8431f;
+    font-size: 13px; padding: 12px; display: none;
+  }
+</style>
+
+<div id="surf"></div>
+<div id="surf-err"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var FRAME_HEIGHT = 600;
+  var EYE_EPS = 0.01;            // eye 좌표 변화 임계값 (이보다 작으면 무시)
+
+  var div = document.getElementById("surf");
+  var errBox = document.getElementById("surf-err");
+
+  var plotlyReady = (typeof Plotly !== "undefined");
+  var rendered = false;          // 최초 렌더 완료 여부
+  var applyingProgrammatic = false;  // 파이썬발(programmatic) 렌더 중 플래그
+  var lastAppliedEye = null;     // 마지막으로 적용한(=슬라이더 유래) eye
+  var lastSentEye = null;        // 마지막으로 parent 로 post 한 eye
+  var lastRevision = null;
+
+  function showError(msg) {
+    try {
+      errBox.style.display = "block";
+      errBox.textContent = msg;
+    } catch (e) { /* ignore */ }
+  }
+
+  // --- Streamlit bare 프로토콜 helper -------------------------------------
+  function post(msg) {
+    msg.isStreamlitMessage = true;
+    try { window.parent.postMessage(msg, "*"); } catch (e) { /* ignore */ }
+  }
+  function sendReady() {
+    post({ type: "streamlit:componentReady", apiVersion: 1 });
+  }
+  function setFrameHeight(h) {
+    post({ type: "streamlit:setFrameHeight", height: h });
+  }
+  function setComponentValue(value) {
+    post({ type: "streamlit:setComponentValue", dataType: "json", value: value });
+  }
+
+  // --- eye 비교 -----------------------------------------------------------
+  function eyeOf(fig) {
+    try { return fig.layout.scene.camera.eye; } catch (e) { return null; }
+  }
+  function eyesClose(a, b, eps) {
+    if (!a || !b) return false;
+    return Math.abs(a.x - b.x) <= eps &&
+           Math.abs(a.y - b.y) <= eps &&
+           Math.abs(a.z - b.z) <= eps;
+  }
+
+  // --- relayout(사용자 드래그) 핸들러 -------------------------------------
+  function onRelayout(e) {
+    try {
+      if (applyingProgrammatic) return;        // 파이썬발 렌더가 유발한 이벤트 → 무시
+      if (!e) return;
+      var cam = e["scene.camera"] ||
+                (e.scene && e.scene.camera) || null;
+      if (!cam || !cam.eye) return;
+      var eye = cam.eye;
+      // 슬라이더 유래(programmatic) 카메라와 사실상 동일하면 무시(에코)
+      if (lastAppliedEye && eyesClose(eye, lastAppliedEye, EYE_EPS)) return;
+      // 직전에 보낸 값과 사실상 동일하면 중복 전송 방지
+      if (lastSentEye && eyesClose(eye, lastSentEye, EYE_EPS)) return;
+      lastSentEye = { x: eye.x, y: eye.y, z: eye.z };
+      setComponentValue({ eye: { x: eye.x, y: eye.y, z: eye.z } });
+    } catch (err) { /* ignore */ }
+  }
+
+  // --- 렌더 -----------------------------------------------------------------
+  function renderFigure(figure, revision) {
+    if (!plotlyReady) { showError("Plotly.js 로드 실패 — 3D 표면을 표시할 수 없습니다."); return; }
+    var data = (figure && figure.data) || [];
+    var layout = (figure && figure.layout) || {};
+    var cfg = { responsive: true, displaylogo: false };
+
+    applyingProgrammatic = true;               // 이 렌더가 유발할 relayout 은 무시하도록
+    var p = Plotly.react(div, data, layout, cfg);
+
+    Promise.resolve(p).then(function () {
+      // 렌더에 적용된 카메라 eye 를 기준값으로 저장 → 에코 판별
+      var eye = eyeOf(figure);
+      if (eye) lastAppliedEye = { x: eye.x, y: eye.y, z: eye.z };
+      // programmatic 으로 갱신된 카메라는 새 baseline 이므로 lastSentEye 도 맞춰
+      if (eye) lastSentEye = { x: eye.x, y: eye.y, z: eye.z };
+
+      if (!rendered) {
+        rendered = true;
+        try { div.on("plotly_relayout", onRelayout); } catch (e) { /* ignore */ }
+      }
+      // 다음 tick 에 플래그 해제(react 가 유발하는 relayout 이 지나간 뒤)
+      setTimeout(function () { applyingProgrammatic = false; }, 0);
+    }).catch(function () {
+      applyingProgrammatic = false;
+      showError("3D 표면 렌더 중 오류가 발생했습니다.");
+    });
+
+    lastRevision = revision;
+  }
+
+  // --- Streamlit render 이벤트 수신 ----------------------------------------
+  function onMessage(event) {
+    try {
+      var data = event.data;
+      if (!data || data.type !== "streamlit:render") return;
+      var args = data.args || {};
+      var figure = args.figure;
+      var revision = args.revision;
+      if (!figure) return;
+      renderFigure(figure, revision);
+    } catch (err) {
+      showError("컴포넌트 메시지 처리 오류: " + err);
+    }
+  }
+
+  // --- 초기화 ---------------------------------------------------------------
+  try {
+    window.addEventListener("message", onMessage);
+    setFrameHeight(FRAME_HEIGHT);
+    sendReady();
+    if (!plotlyReady) {
+      showError("Plotly.js 번들을 불러오지 못했습니다(plotly.min.js).");
+    }
+  } catch (err) {
+    showError("컴포넌트 초기화 실패: " + err);
+  }
+})();
+</script>
