@@ -56,6 +56,25 @@ def test_empty_text_safe():
     assert apply_text_markup("", "plotly") == ""
 
 
+def test_inline_bold_italic_plotly():
+    assert apply_text_markup("a *{b} /{c}", "plotly") == "a <b>b</b> <i>c</i>"
+
+
+def test_inline_bold_italic_mpl():
+    assert apply_text_markup("*{X}", "mpl") == r"$\mathbf{X}$"
+    assert apply_text_markup("/{Y}", "mpl") == r"$\mathit{Y}$"
+
+
+def test_inline_bold_space_preserved_mpl():
+    assert apply_text_markup("*{Raman Shift}", "mpl") == r"$\mathbf{Raman\ Shift}$"
+
+
+def test_partial_markup_mixes_with_plain_text_plotly():
+    # 라벨 일부만 서식: 앞뒤 평문은 그대로
+    assert apply_text_markup("Raman *{Shift} (cm^{-1})", "plotly") == \
+        "Raman <b>Shift</b> (cm<sup>-1</sup>)"
+
+
 # ---------------------------------------------------------------------------
 # Task 2: PlotConfig 필드 + 폰트 dict 헬퍼
 # ---------------------------------------------------------------------------
@@ -102,6 +121,18 @@ def test_surface_axis_label_markup():
     c = PlotConfig(x_label="d_{x}")
     fig = plot.make_surface(np.arange(9.0).reshape(3, 3), c)
     assert fig.layout.scene.xaxis.title.text == "d<sub>x</sub>"
+
+
+def test_contour_lines_toggle_plotly():
+    g = np.arange(9.0).reshape(3, 3)
+    on = plot.make_heatmap(g, PlotConfig(fill_mode="contour", show_contour_lines=True))
+    off = plot.make_heatmap(g, PlotConfig(fill_mode="contour", show_contour_lines=False))
+    assert len(on.data) == 2   # heatmap 채움 + contour 라인
+    assert len(off.data) == 1  # 채움만
+
+
+def test_contour_lines_default_on():
+    assert PlotConfig().show_contour_lines is True
 
 
 # ---------------------------------------------------------------------------

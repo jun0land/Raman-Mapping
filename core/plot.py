@@ -135,21 +135,31 @@ def _mpl_font(name: Optional[str]) -> list[str]:
 
 
 def apply_text_markup(text: str, target: str) -> str:
-    """'^{...}'/'_{...}' 마크업을 렌더러 문법으로 변환.
+    """텍스트 서식 마크업을 렌더러 문법으로 변환(부분 서식 지원).
 
-    target="plotly": '^{x}'->'<sup>x</sup>', '_{x}'->'<sub>x</sub>'
-    target="mpl"   : '^{x}'->'$^{x}$',       '_{x}'->'$_{x}$'
-    마크업이 없으면 원문을 그대로 반환한다(mpl에 불필요한 '$' 미삽입).
-    미종료(예: 'cm^{-1')는 매칭되지 않아 원문 유지. 맨 '^'·'_'는 리터럴.
+    지원 마크업 — 각각 '{...}' 로 감싼 부분에만 적용:
+      '^{x}' 위첨자 · '_{x}' 아래첨자 · '*{x}' 볼드 · '/{x}' 이탤릭
+
+    target="plotly": <sup>/<sub>/<b>/<i> 태그로 변환(화면·kaleido export 완벽).
+    target="mpl"   : mathtext($^{}$ / $_{}$ / $\\mathbf{}$ / $\\mathit{}$)로 변환.
+                     (폴백 전용. 볼드/이탤릭은 수식 폰트로 렌더돼 약간 다를 수 있음.)
+    마크업이 없으면 원문 그대로 반환. 미종료(예: 'cm^{-1')는 매칭 안 돼 원문 유지.
+    맨 '^'·'_'·'*'·'/'는 리터럴. 마크업 중첩은 미지원.
     """
     if not text:
         return text
     if target == "plotly":
         text = re.sub(r"\^\{([^}]*)\}", r"<sup>\1</sup>", text)
         text = re.sub(r"_\{([^}]*)\}", r"<sub>\1</sub>", text)
-    else:  # mpl
+        text = re.sub(r"\*\{([^}]*)\}", r"<b>\1</b>", text)
+        text = re.sub(r"/\{([^}]*)\}", r"<i>\1</i>", text)
+    else:  # mpl (mathtext) — 볼드/이탤릭 내부 공백은 '\ '로 보존
         text = re.sub(r"\^\{([^}]*)\}", r"$^{\1}$", text)
         text = re.sub(r"_\{([^}]*)\}", r"$_{\1}$", text)
+        text = re.sub(r"\*\{([^}]*)\}",
+                      lambda m: "$\\mathbf{" + m.group(1).replace(" ", "\\ ") + "}$", text)
+        text = re.sub(r"/\{([^}]*)\}",
+                      lambda m: "$\\mathit{" + m.group(1).replace(" ", "\\ ") + "}$", text)
     return text
 
 
@@ -267,6 +277,7 @@ class PlotConfig:
     interpolation: str = "none"
     lock_aspect: bool = True
     fill_mode: str = "pixel"  # "pixel"(go.Heatmap) | "contour"(go.Contour)
+    show_contour_lines: bool = True  # contour 모드일 때 등고선 라인 오버레이 표시
 
     # 3D 표면 카메라 (구면 좌표 → Plotly scene.camera.eye)
     cam_azim: float = -45.0
@@ -427,8 +438,10 @@ def make_heatmap(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
             hoverinfo="skip",
         )
         # 라인이 채움 위에 오도록 heatmap 을 먼저, contour 를 나중에 추가한다.
-        # fig.data[0] == heatmap, fig.data[1] == contour.
-        trace = [heatmap_fill, contour_lines]
+        # show_contour_lines=False 면 라인 오버레이 없이 연속 채움만.
+        trace = [heatmap_fill]
+        if cfg.show_contour_lines:
+            trace.append(contour_lines)
     else:
         trace = go.Heatmap(
             z=arr,
@@ -543,19 +556,20 @@ def make_matplotlib_heatmap(
             interpolation="bilinear",
             aspect="equal" if cfg.lock_aspect else "auto",
         )
-        try:
-            xc = _axis_coords(nx, cfg.step_x, cfg.x0)
-            yc = _axis_coords(ny, cfg.step_y, cfg.y0)
-            X, Y = np.meshgrid(xc, yc)
-            ax.contour(
-                X, Y, arr,
-                levels=12,
-                colors="k",
-                linewidths=0.4,
-                alpha=0.35,
-            )
-        except Exception:
-            pass
+        if cfg.show_contour_lines:
+            try:
+                xc = _axis_coords(nx, cfg.step_x, cfg.x0)
+                yc = _axis_coords(ny, cfg.step_y, cfg.y0)
+                X, Y = np.meshgrid(xc, yc)
+                ax.contour(
+                    X, Y, arr,
+                    levels=12,
+                    colors="k",
+                    linewidths=0.4,
+                    alpha=0.35,
+                )
+            except Exception:
+                pass
     else:
         im = ax.imshow(
             arr,

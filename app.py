@@ -108,7 +108,7 @@ DEFAULTS = {
     "fmt_bold_tick": False, "fmt_italic_tick": False, "fmt_color_tick": "#000000",
     "fmt_bold_title": False, "fmt_italic_title": False, "fmt_color_title": "#000000",
     "fmt_interp": "none", "fmt_aspect": True,
-    "fmt_fill": "픽셀(격자)",
+    "fmt_fill": "픽셀(격자)", "fmt_contour_lines": True,
     # export
     "exp_dpi": 300,
     "exp_fmt": "PNG (투명)",
@@ -231,6 +231,15 @@ html, body, [class*="css"], .stApp, button, input, textarea, select {{
 .stTabs [aria-selected="true"] {{
     color: {ACCENT} !important;
     border-bottom: 3px solid {ACCENT} !important;
+}}
+
+/* 콘텐츠 고정 최대폭 + 가운데 정렬 — 넓은 모니터에서 여백만 늘고 레이아웃은 동일하게
+   유지(공간만 늘어나 성겨 보이는 문제 방지). 좁은 화면에서는 자연스럽게 reflow. */
+.block-container {{
+    max-width: 1560px;
+    margin: 0 auto;
+    padding-left: 3rem;
+    padding-right: 3rem;
 }}
 
 /* 파일 업로더 */
@@ -569,6 +578,7 @@ def build_plot_config(grid_arr: np.ndarray | None = None) -> plot.PlotConfig:
         font_color_title=ss.fmt_color_title,
         interpolation=ss.fmt_interp, lock_aspect=ss.fmt_aspect,
         fill_mode=("contour" if ss.fmt_fill == "등고선(contour)" else "pixel"),
+        show_contour_lines=ss.fmt_contour_lines,
         cam_azim=float(ss.cam_azim), cam_elev=float(ss.cam_elev),
         cam_zoom=float(ss.cam_zoom),
     )
@@ -1059,163 +1069,173 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
     global _export_used_fallback
     ss = st.session_state
 
-    # ---- ③ 매핑 값 추출 ----
-    section("③ 매핑 값 추출", "모드별 파수 조건 입력")
-    st.selectbox("추출 모드", MODES, key="ex_mode",
-                 format_func=lambda m: MODE_LABELS[m])
-    ex_mode_sel = ss.ex_mode
-    if ex_mode_sel == "single":
-        st.number_input("파수 (cm⁻¹)", min_value=wmin, max_value=wmax,
-                        step=1.0, key="ex_wave")
-    elif ex_mode_sel in ("peak_max", "peak_area", "peak_position", "fwhm"):
-        cc1, cc2 = st.columns(2)
-        cc1.number_input("구간 시작 w1 (cm⁻¹)", min_value=wmin, max_value=wmax,
-                         step=1.0, key="ex_w1")
-        cc2.number_input("구간 끝 w2 (cm⁻¹)", min_value=wmin, max_value=wmax,
-                         step=1.0, key="ex_w2")
-    else:  # ratio
-        st.markdown("**구간 A (분자)**")
-        ca1, ca2 = st.columns(2)
-        ca1.number_input("A 시작 a1", min_value=wmin, max_value=wmax,
-                         step=1.0, key="ex_a1")
-        ca2.number_input("A 끝 a2", min_value=wmin, max_value=wmax,
-                         step=1.0, key="ex_a2")
-        st.markdown("**구간 B (분모)**")
-        cb1, cb2 = st.columns(2)
-        cb1.number_input("B 시작 b1", min_value=wmin, max_value=wmax,
-                         step=1.0, key="ex_b1")
-        cb2.number_input("B 끝 b2", min_value=wmin, max_value=wmax,
-                         step=1.0, key="ex_b2")
-        st.radio("metric", ["max", "area"], key="ex_metric", horizontal=True)
+    # 좌: 컨트롤(③④⑤) · 우: 최종 뷰. 왼쪽에서 값을 조정하면 오른쪽 맵이 즉시 반영되어
+    # "조정하며 결과 보기"가 한 화면에서 된다. gap="large" 로 두 열 사이 여백을 확보.
+    c_ctrl, c_view = st.columns([1, 1.35], gap="large")
+    # ⑤ 서식은 컨트롤이 많아 좁은 열에 넣으면 답답하다. 풀폭 컨테이너를 미리 만들어
+    # 배치는 두 열 '아래'에 두되, 실행은 아래 순서(⑤ → pcfg → 최종 뷰)를 유지한다.
+    fmt_box = st.container()
 
-    st.divider()
+    with c_ctrl:
+        # ---- ③ 매핑 값 추출 ----
+        section("③ 매핑 값 추출", "모드별 파수 조건 입력")
+        st.selectbox("추출 모드", MODES, key="ex_mode",
+                     format_func=lambda m: MODE_LABELS[m])
+        ex_mode_sel = ss.ex_mode
+        if ex_mode_sel == "single":
+            st.number_input("파수 (cm⁻¹)", min_value=wmin, max_value=wmax,
+                            step=1.0, key="ex_wave")
+        elif ex_mode_sel in ("peak_max", "peak_area", "peak_position", "fwhm"):
+            cc1, cc2 = st.columns(2)
+            cc1.number_input("구간 시작 w1 (cm⁻¹)", min_value=wmin, max_value=wmax,
+                             step=1.0, key="ex_w1")
+            cc2.number_input("구간 끝 w2 (cm⁻¹)", min_value=wmin, max_value=wmax,
+                             step=1.0, key="ex_w2")
+        else:  # ratio
+            st.markdown("**구간 A (분자)**")
+            ca1, ca2 = st.columns(2)
+            ca1.number_input("A 시작 a1", min_value=wmin, max_value=wmax,
+                             step=1.0, key="ex_a1")
+            ca2.number_input("A 끝 a2", min_value=wmin, max_value=wmax,
+                             step=1.0, key="ex_a2")
+            st.markdown("**구간 B (분모)**")
+            cb1, cb2 = st.columns(2)
+            cb1.number_input("B 시작 b1", min_value=wmin, max_value=wmax,
+                             step=1.0, key="ex_b1")
+            cb2.number_input("B 끝 b2", min_value=wmin, max_value=wmax,
+                             step=1.0, key="ex_b2")
+            st.radio("metric", ["max", "area"], key="ex_metric", horizontal=True)
 
-    # ---- ④ 방향 정렬 (별도 미리보기 히트맵 제거 → 아래 최종 뷰가 미리보기 겸함) ----
-    section("④ 방향 정렬", "optic 이미지와 방향을 맞추세요 · 결과는 아래 최종 뷰에 실시간 반영")
-    st.selectbox("스캔 방식", SCANS, key="or_scan")
-    st.selectbox("시작 코너", STARTS, key="or_start")
-    st.markdown("**추가 변환 (순서대로 적용)**")
-    for op in OPS:
-        st.checkbox(OP_LABELS[op], key=f"op_{op}")
+        st.divider()
 
-    # ---- 값 추출 + 그리드 변환 (값싼 연산) ----
-    grid_err = None
-    gridarr = None
-    idx_grid = None
-    try:
-        mode, ex_params = build_extract_params()
-        values = extract.extract_values(spectra_pp, raman.waves, mode, **ex_params)
-        gcfg = build_grid_config()
-        gridarr = grid.apply_transform(values, nx, ny, gcfg)
-        idx_grid = grid.apply_transform(
-            np.arange(raman.n_points, dtype=float), nx, ny, gcfg
-        ).round().astype(int)
-    except Exception as e:
-        grid_err = str(e)
+        # ---- ④ 방향 정렬 (별도 미리보기 히트맵 제거 → 오른쪽 최종 뷰가 미리보기 겸함) ----
+        section("④ 방향 정렬",
+                "optic 이미지와 방향을 맞추세요 · 결과는 오른쪽 최종 뷰에 실시간 반영")
+        st.selectbox("스캔 방식", SCANS, key="or_scan")
+        st.selectbox("시작 코너", STARTS, key="or_start")
+        st.markdown("**추가 변환 (순서대로 적용)**")
+        for op in OPS:
+            st.checkbox(OP_LABELS[op], key=f"op_{op}")
 
-    st.divider()
+        # ---- 값 추출 + 그리드 변환 (값싼 연산) ----
+        grid_err = None
+        gridarr = None
+        idx_grid = None
+        try:
+            mode, ex_params = build_extract_params()
+            values = extract.extract_values(spectra_pp, raman.waves, mode, **ex_params)
+            gcfg = build_grid_config()
+            gridarr = grid.apply_transform(values, nx, ny, gcfg)
+            idx_grid = grid.apply_transform(
+                np.arange(raman.n_points, dtype=float), nx, ny, gcfg
+            ).round().astype(int)
+        except Exception as e:
+            grid_err = str(e)
 
-    # ---- ⑤ 히트맵 서식 ----
-    section("⑤ 히트맵 서식", "colormap · z-range · 축 · colorbar · 폰트")
-    with st.expander("서식 옵션 펼치기", expanded=True):
-        f1, f2, f3 = st.columns(3)
-        with f1:
-            st.selectbox("Colormap", COLORMAPS, key="fmt_cmap")
-            st.radio("2D 채우기", ["픽셀(격자)", "등고선(contour)"],
-                     key="fmt_fill", horizontal=True,
-                     help="픽셀=격자 히트맵, 등고선=Origin 스타일 컬러 컨투어 "
-                          "(2D 뷰·내보내기에만 적용, 3D 표면은 무관)")
-            st.checkbox("z-range 자동 (2–98%)", key="fmt_zauto")
-            if gridarr is not None:
-                st.button("현재 데이터로 auto z 적용",
-                          on_click=_apply_auto_z, args=(gridarr,))
-            if not ss.fmt_zauto:
-                st.number_input("z-min", key="fmt_zmin", format="%.4g")
-                st.number_input("z-max", key="fmt_zmax", format="%.4g")
-        with f2:
-            st.text_input("X 축 라벨", key="fmt_xlabel")
-            st.text_input("Y 축 라벨", key="fmt_ylabel")
-            st.text_input("제목", key="fmt_title")
-            st.number_input("Step X (μm)", min_value=0.0001, step=0.1,
-                            key="fmt_stepx", format="%.4g")
-            st.number_input("Step Y (μm)", min_value=0.0001, step=0.1,
-                            key="fmt_stepy", format="%.4g")
-        with f3:
-            st.text_input("Colorbar 라벨", key="fmt_cbarlabel")
-            st.number_input("Colorbar tick 개수", min_value=2, max_value=40,
-                            step=1, key="fmt_cbarticks")
-            st.caption("값을 높이면 colorbar·컨투어가 더 연속적으로 보입니다.")
-            st.selectbox("폰트", FONTS, key="fmt_font")
-            st.caption("위첨자 `^{ }`, 아래첨자 `_{ }`  예: `cm^{-1}`, `µm_{2}`")
-            for _lbl, _sz, _bd, _it, _col in [
-                ("라벨", "fmt_fs_label", "fmt_bold_label", "fmt_italic_label", "fmt_color_label"),
-                ("눈금", "fmt_fs_tick", "fmt_bold_tick", "fmt_italic_tick", "fmt_color_tick"),
-                ("제목", "fmt_fs_title", "fmt_bold_title", "fmt_italic_title", "fmt_color_title"),
-            ]:
-                _r = st.columns([1.1, 1.2, 0.7, 0.7, 1.1])
-                _r[0].markdown(f"**{_lbl}**")
-                _r[1].number_input("크기", min_value=6, max_value=40, key=_sz,
-                                   label_visibility="collapsed")
-                _r[2].checkbox("B", key=_bd)
-                _r[3].checkbox("I", key=_it)
-                _r[4].color_picker("색", key=_col, label_visibility="collapsed")
-            st.checkbox("눈금 표시", key="fmt_showticks")
-            st.number_input("눈금 간격 (μm, 0=자동)", min_value=0.0, step=1.0,
-                            key="fmt_tickspacing")
-            st.selectbox("Interpolation", ["none", "bilinear"], key="fmt_interp")
-            st.checkbox("1:1 종횡비 고정", key="fmt_aspect")
+    with fmt_box:
+        st.divider()
+        # ---- ⑤ 히트맵 서식 ----
+        section("⑤ 히트맵 서식", "colormap · z-range · 축 · colorbar · 폰트")
+        with st.expander("서식 옵션 펼치기", expanded=True):
+            f1, f2, f3 = st.columns(3, gap="large")
+            with f1:
+                st.selectbox("Colormap", COLORMAPS, key="fmt_cmap")
+                st.radio("2D 채우기", ["픽셀(격자)", "등고선(contour)"],
+                         key="fmt_fill", horizontal=True,
+                         help="픽셀=격자 히트맵, 등고선=Origin 스타일 컬러 컨투어 "
+                              "(2D 뷰·내보내기에만 적용, 3D 표면은 무관)")
+                if ss.fmt_fill == "등고선(contour)":
+                    st.checkbox("등고선 라인 표시", key="fmt_contour_lines",
+                                help="컨투어 채움 위에 겹쳐 그리는 등고선 라인만 켜고 "
+                                     "끕니다 (채움·colorbar 는 그대로).")
+                st.checkbox("z-range 자동 (2–98%)", key="fmt_zauto")
+                if gridarr is not None:
+                    st.button("현재 데이터로 auto z 적용",
+                              on_click=_apply_auto_z, args=(gridarr,))
+                if not ss.fmt_zauto:
+                    st.number_input("z-min", key="fmt_zmin", format="%.4g")
+                    st.number_input("z-max", key="fmt_zmax", format="%.4g")
+            with f2:
+                st.text_input("X 축 라벨", key="fmt_xlabel")
+                st.text_input("Y 축 라벨", key="fmt_ylabel")
+                st.text_input("제목", key="fmt_title")
+                st.number_input("Step X (μm)", min_value=0.0001, step=0.1,
+                                key="fmt_stepx", format="%.4g")
+                st.number_input("Step Y (μm)", min_value=0.0001, step=0.1,
+                                key="fmt_stepy", format="%.4g")
+            with f3:
+                st.text_input("Colorbar 라벨", key="fmt_cbarlabel")
+                st.number_input("Colorbar tick 개수", min_value=2, max_value=40,
+                                step=1, key="fmt_cbarticks")
+                st.caption("값을 높이면 colorbar·컨투어가 더 연속적으로 보입니다.")
+                st.selectbox("폰트", FONTS, key="fmt_font")
+                st.caption("텍스트 일부 서식 — 위첨자 `^{ }` · 아래첨자 `_{ }` · "
+                           "볼드 `*{ }` · 이탤릭 `/{ }`   예: `Raman *{Shift} (cm^{-1})`")
+                for _lbl, _sz, _bd, _it, _col in [
+                    ("라벨", "fmt_fs_label", "fmt_bold_label", "fmt_italic_label", "fmt_color_label"),
+                    ("눈금", "fmt_fs_tick", "fmt_bold_tick", "fmt_italic_tick", "fmt_color_tick"),
+                    ("제목", "fmt_fs_title", "fmt_bold_title", "fmt_italic_title", "fmt_color_title"),
+                ]:
+                    _r = st.columns([1.1, 1.2, 0.7, 0.7, 0.8])
+                    _r[0].markdown(f"**{_lbl}**")
+                    _r[1].number_input("크기", min_value=6, max_value=40, key=_sz,
+                                       label_visibility="collapsed")
+                    _r[2].checkbox("B", key=_bd)
+                    _r[3].checkbox("I", key=_it)
+                    _r[4].color_picker("색", key=_col, label_visibility="collapsed")
+                st.checkbox("눈금 표시", key="fmt_showticks")
+                st.number_input("눈금 간격 (μm, 0=자동)", min_value=0.0, step=1.0,
+                                key="fmt_tickspacing")
+                st.selectbox("Interpolation", ["none", "bilinear"], key="fmt_interp")
+                st.checkbox("1:1 종횡비 고정", key="fmt_aspect")
+
+        if grid_err is not None:
+            st.error(f"⚠️ {grid_err}")
 
     if grid_err is not None:
-        st.error(f"⚠️ {grid_err}")
         return
 
     pcfg = build_plot_config(gridarr)
 
-    # ---- 보기 방식 + 최종 뷰 (단일 렌더 = 미리보기 겸 최종) ----
-    st.radio("보기 방식", ["2D 히트맵", "3D 표면(Surface)"],
-             key="view_mode", horizontal=True)
-    event = None
-    if ss.view_mode == "3D 표면(Surface)":
-        st.markdown("**3D 컬러맵 표면** — 방위각·고도·줌 슬라이더로 각도를 잡습니다. "
-                    "마우스 드래그는 자유 관찰용입니다. (colormap·z-range·라벨·폰트 서식이 "
-                    "그대로 적용됩니다. 스펙트럼 QC는 아래 X/Y 픽셀 입력을 사용하세요.)")
-        st.caption("🖱️ 마우스 드래그로 돌린 각도는 위 슬라이더·내보내기에 반영되지 "
-                   "않습니다(자유 관찰용). 저장할 각도는 슬라이더·프리셋으로 맞추세요.")
-        # 카메라 컨트롤 — 화면 == export 각도 동기화 (make_surface 가 이 값으로 eye 계산)
-        cca = st.columns(3)
-        cca[0].slider("방위각 azimuth (°)", -180.0, 180.0, step=1.0, key="cam_azim")
-        cca[1].slider("고도 elevation (°)", 0.0, 90.0, step=1.0, key="cam_elev")
-        cca[2].slider("줌 거리 (클수록 축소)", 1.2, 4.0, step=0.1, key="cam_zoom")
-        pcb = st.columns(3)
-        pcb[0].button("정면 뷰", use_container_width=True,
-                      on_click=_set_camera, args=(-90.0, 8.0, 2.4))
-        pcb[1].button("등각 뷰", use_container_width=True,
-                      on_click=_set_camera, args=(-45.0, 25.0, 2.2))
-        pcb[2].button("위에서 뷰", use_container_width=True,
-                      on_click=_set_camera, args=(-90.0, 89.0, 2.2))
-        st.caption("내보내기(Export) PNG/JPG/SVG/PDF 각도는 위 슬라이더/프리셋 값으로 "
-                   "결정됩니다.")
+    # ---- 보기 방식 + 최종 뷰 (오른쪽 열 = 왼쪽 컨트롤 조정 결과를 즉시 확인) ----
+    with c_view:
+        st.radio("보기 방식", ["2D 히트맵", "3D 표면(Surface)"],
+                 key="view_mode", horizontal=True)
+        event = None
+        if ss.view_mode == "3D 표면(Surface)":
+            st.caption("🖱️ 마우스 드래그는 자유 관찰용이며 내보내기 각도에는 반영되지 "
+                       "않습니다. 저장할 각도는 아래 슬라이더·프리셋으로 맞추세요.")
+            surf_fig = plot.make_surface(gridarr, pcfg)
+            st.plotly_chart(surf_fig, use_container_width=True, key="surf3d_plot")
 
-        # 3D 표면은 st.plotly_chart 로 렌더(항상 안정적으로 표시). 카메라 각도는
-        # make_surface 가 슬라이더(cam_*)로 계산한 eye 를 사용한다. 마우스 드래그는
-        # 브라우저에서 자유 회전용이며 export 에는 반영되지 않는다(슬라이더/프리셋 기준).
-        surf_fig = plot.make_surface(gridarr, pcfg)
-        st.plotly_chart(surf_fig, use_container_width=True, key="surf3d_plot")
-    else:
-        final_fig = plot.make_heatmap(gridarr, pcfg)
-        if ss.fmt_fill == "등고선(contour)":
-            # go.Contour 는 클릭 포인트 이벤트가 불안정하므로 on_select 를 걸지 않고,
-            # 스펙트럼 QC 는 아래 X/Y 픽셀 입력(폴백)으로 처리한다.
-            st.markdown("**최종 컨투어 맵** — 등고선(채움) 렌더. 스펙트럼 QC 는 아래 "
-                        "X/Y 픽셀 입력을 사용하세요. (방향/서식 변경이 실시간 반영됩니다.)")
-            st.plotly_chart(final_fig, use_container_width=True,
-                            key="final_contour")
+            # 카메라 컨트롤 — 화면 == export 각도 동기화 (make_surface 가 eye 계산).
+            # 맵 바로 아래에 두어 각도를 돌리며 결과를 같은 시야에서 확인한다.
+            cca = st.columns(3)
+            cca[0].slider("방위각 azimuth (°)", -180.0, 180.0, step=1.0, key="cam_azim")
+            cca[1].slider("고도 elevation (°)", 0.0, 90.0, step=1.0, key="cam_elev")
+            cca[2].slider("줌 거리 (클수록 축소)", 1.2, 4.0, step=0.1, key="cam_zoom")
+            pcb = st.columns(3)
+            pcb[0].button("정면 뷰", use_container_width=True,
+                          on_click=_set_camera, args=(-90.0, 8.0, 2.4))
+            pcb[1].button("등각 뷰", use_container_width=True,
+                          on_click=_set_camera, args=(-45.0, 25.0, 2.2))
+            pcb[2].button("위에서 뷰", use_container_width=True,
+                          on_click=_set_camera, args=(-90.0, 89.0, 2.2))
         else:
-            st.markdown("**최종 히트맵** — 픽셀을 클릭하면 아래에 원본 스펙트럼이 표시됩니다. "
-                        "(방향/서식 변경이 이 뷰에 실시간 반영됩니다.)")
-            event = st.plotly_chart(final_fig, use_container_width=True,
-                                    key="final_heatmap", on_select="rerun",
-                                    selection_mode=("points", "box"))
+            final_fig = plot.make_heatmap(gridarr, pcfg)
+            if ss.fmt_fill == "등고선(contour)":
+                # go.Contour 는 클릭 포인트 이벤트가 불안정하므로 on_select 를 걸지 않고,
+                # 스펙트럼 QC 는 아래 X/Y 픽셀 입력(폴백)으로 처리한다.
+                st.plotly_chart(final_fig, use_container_width=True,
+                                key="final_contour")
+                st.caption("최종 컨투어 맵 — 스펙트럼 QC 는 아래 X/Y 픽셀 입력을 "
+                           "사용하세요.")
+            else:
+                event = st.plotly_chart(final_fig, use_container_width=True,
+                                        key="final_heatmap", on_select="rerun",
+                                        selection_mode=("points", "box"))
+                st.caption("픽셀을 클릭하면 아래 ⑥ 스펙트럼 뷰어에 원본 스펙트럼이 "
+                           "표시됩니다.")
 
     # (레거시) 예전 사이드바 Export 가 읽던 최신 값. 이제 이미지/매트릭스 export 는
     # 바로 아래 프래그먼트 내부에서 gridarr/pcfg/ss.view_mode 를 직접 사용하므로
@@ -1285,78 +1305,82 @@ with tab_map:
     else:
         wmin, wmax = float(raman.waves.min()), float(raman.waves.max())
 
+        # 상단 한 줄: ① 데이터 정보(더 중요 → 넓게) | ② 전처리(접힘 기본 → 좁게).
+        # gap="large" 로 두 블록 사이 여백을 확보한다.
+        c_info, c_pre = st.columns([1.6, 1], gap="large")
+
         # ---- 파일 정보 ----
-        section("① 데이터 정보", "감지된 포맷 · 메타데이터 · 포인트 수")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("포맷", FORMAT_LABELS.get(raman.source_format,
-                                          raman.source_format))
-        m2.metric("포인트 수", f"{raman.n_points}")
-        m3.metric("파수 채널", f"{raman.n_waves}")
-        m4.metric("파수 범위", f"{wmin:.0f}~{wmax:.0f}")
-        if raman.metadata:
-            with st.expander("메타데이터 전체 보기"):
-                st.json(raman.metadata)
-        # 그리드 힌트 안내
-        hint = []
-        if raman.map_width:
-            hint.append(f"Map Width={raman.map_width}")
-        if raman.step_x:
-            hint.append(f"Step X/Y={raman.step_x}/{raman.step_y}")
-        if hint:
-            st.caption("메타 힌트: " + ", ".join(hint) +
-                       f" · 기본 그리드 {int(np.sqrt(raman.n_points))}×"
-                       f"{int(np.sqrt(raman.n_points))} 추천")
+        with c_info:
+            section("① 데이터 정보", "감지된 포맷 · 메타데이터 · 포인트 수")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("포맷", FORMAT_LABELS.get(raman.source_format,
+                                              raman.source_format))
+            m2.metric("포인트 수", f"{raman.n_points}")
+            m3.metric("파수 채널", f"{raman.n_waves}")
+            m4.metric("파수 범위", f"{wmin:.0f}~{wmax:.0f}")
+            if raman.metadata:
+                with st.expander("메타데이터 전체 보기"):
+                    st.json(raman.metadata)
+            # 그리드 힌트 안내
+            hint = []
+            if raman.map_width:
+                hint.append(f"Map Width={raman.map_width}")
+            if raman.step_x:
+                hint.append(f"Step X/Y={raman.step_x}/{raman.step_y}")
+            if hint:
+                st.caption("메타 힌트: " + ", ".join(hint) +
+                           f" · 기본 그리드 {int(np.sqrt(raman.n_points))}×"
+                           f"{int(np.sqrt(raman.n_points))} 추천")
 
-        if pipe.get("grid_mismatch"):
-            st.error(f"⚠️ {pipe['grid_mismatch']} — 사이드바에서 nx/ny를 조정하세요.")
-
-        st.divider()
+            if pipe.get("grid_mismatch"):
+                st.error(f"⚠️ {pipe['grid_mismatch']} — 사이드바에서 nx/ny를 조정하세요.")
 
         # ---- 전처리 ----
-        section("② 전처리 (선택)", "cosmic · baseline · smoothing · normalize")
-        with st.expander("전처리 옵션 펼치기", expanded=False):
-            # --- Baseline 보정: 전체 너비 (긴 ALS 경고 캡션이 반 폭에 눌리지 않도록) ---
-            st.markdown("**Baseline 보정**")
-            st.selectbox("Baseline 보정", ["off", "als", "poly"],
-                         key="pp_baseline", label_visibility="collapsed")
-            st.caption("⚠️ ALS는 400 스펙트럼에 약 4초 걸립니다(가장 무거운 단계). "
-                       "빠른 작업은 off 또는 poly 를 권장합니다. 동일 설정은 캐시되어 "
-                       "재계산 없이 즉시 반영됩니다.")
-            if st.session_state.pp_baseline == "als":
-                ba1, ba2, ba3 = st.columns(3)
-                ba1.number_input("ALS λ (lam)", min_value=1.0,
-                                 step=1000.0, key="pp_als_lam", format="%.0f")
-                ba2.number_input("ALS p", min_value=0.0001, max_value=0.5,
-                                 step=0.001, key="pp_als_p", format="%.4f")
-                ba3.number_input("ALS niter", min_value=1, max_value=50,
-                                 step=1, key="pp_als_niter")
-            elif st.session_state.pp_baseline == "poly":
-                st.number_input("다항식 차수", min_value=0, max_value=15,
-                                step=1, key="pp_poly_order")
+        with c_pre:
+            section("② 전처리 (선택)", "cosmic · baseline · smoothing · normalize")
+            with st.expander("전처리 옵션 펼치기", expanded=False):
+                # --- Baseline 보정: 열 전체 너비 (긴 ALS 경고 캡션이 눌리지 않도록) ---
+                st.markdown("**Baseline 보정**")
+                st.selectbox("Baseline 보정", ["off", "als", "poly"],
+                             key="pp_baseline", label_visibility="collapsed")
+                st.caption("⚠️ ALS는 400 스펙트럼에 약 4초 걸립니다(가장 무거운 단계). "
+                           "빠른 작업은 off 또는 poly 를 권장합니다. 동일 설정은 캐시되어 "
+                           "재계산 없이 즉시 반영됩니다.")
+                if st.session_state.pp_baseline == "als":
+                    ba1, ba2, ba3 = st.columns(3)
+                    ba1.number_input("ALS λ (lam)", min_value=1.0,
+                                     step=1000.0, key="pp_als_lam", format="%.0f")
+                    ba2.number_input("ALS p", min_value=0.0001, max_value=0.5,
+                                     step=0.001, key="pp_als_p", format="%.4f")
+                    ba3.number_input("ALS niter", min_value=1, max_value=50,
+                                     step=1, key="pp_als_niter")
+                elif st.session_state.pp_baseline == "poly":
+                    st.number_input("다항식 차수", min_value=0, max_value=15,
+                                    step=1, key="pp_poly_order")
 
-            st.divider()
+                st.divider()
 
-            # --- 나머지 전처리(Cosmic / Smoothing / Normalization): 2열 ---
-            c1, c2 = st.columns(2)
-            with c1:
-                st.checkbox("Cosmic ray 제거", key="pp_cosmic")
-                if st.session_state.pp_cosmic:
-                    st.number_input("threshold (MAD 배수)", min_value=1.0,
-                                    max_value=20.0, step=0.5, key="pp_cosmic_thr")
-                    st.number_input("window (홀수)", min_value=3, max_value=51,
-                                    step=2, key="pp_cosmic_win")
-                st.selectbox("Normalization", ["off", "max", "peak"],
-                             key="pp_norm")
-                if st.session_state.pp_norm == "peak":
-                    st.number_input("기준 파수 (cm⁻¹)", min_value=wmin,
-                                    max_value=wmax, step=1.0, key="pp_norm_peak")
-            with c2:
-                st.checkbox("Savitzky-Golay 평활", key="pp_smooth")
-                if st.session_state.pp_smooth:
-                    st.number_input("window (홀수)", min_value=3, max_value=101,
-                                    step=2, key="pp_smooth_win")
-                    st.number_input("polyorder", min_value=0, max_value=10,
-                                    step=1, key="pp_smooth_poly")
+                # --- 나머지 전처리(Cosmic / Smoothing / Normalization): 2열 ---
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.checkbox("Cosmic ray 제거", key="pp_cosmic")
+                    if st.session_state.pp_cosmic:
+                        st.number_input("threshold (MAD 배수)", min_value=1.0,
+                                        max_value=20.0, step=0.5, key="pp_cosmic_thr")
+                        st.number_input("window (홀수)", min_value=3, max_value=51,
+                                        step=2, key="pp_cosmic_win")
+                    st.selectbox("Normalization", ["off", "max", "peak"],
+                                 key="pp_norm")
+                    if st.session_state.pp_norm == "peak":
+                        st.number_input("기준 파수 (cm⁻¹)", min_value=wmin,
+                                        max_value=wmax, step=1.0, key="pp_norm_peak")
+                with c2:
+                    st.checkbox("Savitzky-Golay 평활", key="pp_smooth")
+                    if st.session_state.pp_smooth:
+                        st.number_input("window (홀수)", min_value=3, max_value=101,
+                                        step=2, key="pp_smooth_win")
+                        st.number_input("polyorder", min_value=0, max_value=10,
+                                        step=1, key="pp_smooth_poly")
 
         st.divider()
 
