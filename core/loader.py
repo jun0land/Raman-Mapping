@@ -395,6 +395,78 @@ def _parse_wide(leading: list[list[Any]], numeric_block: list[list[Any]],
                      source_format="wide", filename=filename, **hints)
 
 
+def _is_labeled_numeric_row(row: Sequence[Any], min_count: int = 2) -> bool:
+    """첫 셀이 텍스트 라벨이고 나머지 셀이 모두 숫자인 행인지 (labeled equipment).
+
+    예) 'X Axis,546.57,549.28,…'  또는  '(0)(0)(0),807,791,…'
+    첫 셀은 비어있지 않은 비숫자 라벨, row[1:] 은 (후행 빈 셀 제외) 모두 숫자이며
+    숫자 개수가 min_count 이상이어야 한다.
+    """
+    cells = list(row)
+    while cells and _is_blank(cells[-1]):
+        cells.pop()
+    if len(cells) < min_count + 1:
+        return False
+    if _is_blank(cells[0]) or _is_number(cells[0]):
+        return False
+    nums = 0
+    for c in cells[1:]:
+        if _is_blank(c):
+            continue
+        if not _is_number(c):
+            return False
+        nums += 1
+    return nums >= min_count
+
+
+def _is_coord_label(cell: Any) -> bool:
+    """'(x)(y)' 형태의 좌표 라벨인지 (요약행 'Average' 등과 구분)."""
+    return bool(re.search(r"\(-?\d+\)\s*\(-?\d+\)", str(cell)))
+
+
+def _parse_point_labels(labels: Sequence[Any]) -> Optional[np.ndarray]:
+    """'(x)(y)' / '(x)(y)(z)' 형태 라벨 리스트 → (n, 2) 좌표 배열. 실패 시 None."""
+    coords: list[list[float]] = []
+    for lab in labels:
+        nums = re.findall(r"\((-?\d+)\)", str(lab))
+        if len(nums) < 2:
+            return None
+        coords.append([float(nums[0]), float(nums[1])])
+    if not coords:
+        return None
+    return np.array(coords, dtype=float)
+
+
+def _parse_labeled_equipment(leading: list[list[Any]],
+                             labeled_block: list[list[Any]],
+                             filename: Optional[str]) -> RamanData:
+    """labeled equipment 포맷 → RamanData.
+
+    각 행 = [라벨, 숫자…]. 첫 라벨행 = 파수축('X Axis'), 이후 = 스펙트럼.
+    데이터 행 라벨 '(x)(y)[(z)]' 에서 (x, y) 좌표를 파싱해 coords로 보관한다.
+    내부 source_format 은 기존 파이프라인 호환을 위해 'equipment' 로 둔다.
+    """
+    labels = [row[0] for row in labeled_block]
+    stripped = [list(row[1:]) for row in labeled_block]
+    arr = _block_to_array(stripped)
+    waves = arr[0]
+    spectra = arr[1:]
+    good = ~np.isnan(waves)
+    if not good.all():
+        waves = waves[good]
+        spectra = spectra[:, good]
+    waves, spectra = _sort_waves(waves, np.ascontiguousarray(spectra))
+    # 데이터 행(파수축 제외) 라벨에서 좌표 파싱
+    coords = _parse_point_labels(labels[1:])
+    if coords is not None and coords.shape[0] != spectra.shape[0]:
+        coords = None
+    meta = _parse_metadata(leading)
+    hints = _grid_hints(meta)
+    return RamanData(spectra=spectra, waves=waves, metadata=meta,
+                     source_format="equipment", filename=filename,
+                     coords=coords, **hints)
+
+
 # ---------------------------------------------------------------------------
 # 포맷 감지 + 디스패치
 # ---------------------------------------------------------------------------
@@ -418,6 +490,25 @@ def _detect_and_parse(rows: list[list[Any]], filename: Optional[str]) -> RamanDa
             first_num = i
             break
     if first_num is None:
+        # 폴백: 라벨 있는 equipment (첫 셀=라벨, 나머지=숫자). 순수 숫자행이
+        # 하나도 없을 때만 시도하므로 기존 포맷에는 영향이 없다.
+        first_lab = None
+        for i, r in enumerate(rows):
+            if _is_labeled_numeric_row(r):
+                first_lab = i
+                break
+        if first_lab is not None:
+            # 첫 라벨행 = 파수축. 이후 좌표 라벨 '(x)(y)' 행만 데이터로 수집하고
+            # 'Average' 등 요약행(비좌표 라벨)을 만나면 멈춘다.
+            labeled_block = [rows[first_lab]]
+            for r in rows[first_lab + 1:]:
+                if _all_blank(r):
+                    continue
+                if _is_labeled_numeric_row(r) and _is_coord_label(r[0]):
+                    labeled_block.append(r)
+                else:
+                    break
+            return _parse_labeled_equipment(rows[:first_lab], labeled_block, filename)
         raise ValueError("숫자 데이터 행을 찾을 수 없습니다: 지원되지 않는 포맷입니다.")
 
     numeric_block = []
