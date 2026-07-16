@@ -335,24 +335,43 @@ def make_heatmap(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
     colorbar.update(_colorbar_ticks(zmin_eff, zmax_eff, int(cfg.colorbar_ticks)))
 
     if str(cfg.fill_mode).lower() == "contour":
-        # Origin 스타일 컬러 컨투어 맵. 픽셀 히트맵·3D 표면과 동일하게 "연속적으로"
-        # 보이도록 contours_coloring="heatmap"(색을 보간해 연속 채움)을 사용하고,
-        # 얇은 등고선(line_width~0.5)과 촘촘한 ncontours 로 부드러운 컨투어 라인을
-        # 겹쳐 등고선 맵의 성격은 유지한다. colorbar 는 연속 그라데이션이 된다.
-        trace = go.Contour(
+        # Origin 스타일 컬러 컨투어 맵. 단일 go.Contour(contours_coloring="heatmap")
+        # 는 colorbar 를 등고선 경계(밴드)로 그려 "계단식/분절"로 보이는 문제가 있다.
+        # 픽셀 go.Heatmap·3D go.Surface 의 colorbar 와 동일하게 "연속"으로 만들기
+        # 위해 두 개의 trace 로 구성한다:
+        #   (1) go.Heatmap: 연속 색 채움(zsmooth="best")을 담당하고 연속 colorbar 를
+        #       소유(showscale=True, 픽셀 브랜치와 동일한 colorbar 설정). 정확한 눈금
+        #       개수의 매끄러운 그라데이션 colorbar 가 된다.
+        #   (2) go.Contour: 등고선 "라인"만(contours_coloring="lines") 그린다. 채움도
+        #       colorbar 도 없이(showscale=False) 반투명 어두운 라인을 위에 겹쳐
+        #       컨투어 맵의 성격을 유지한다.
+        heatmap_fill = go.Heatmap(
             z=arr,
             x=x_coords,
             y=y_coords,
             colorscale=colorscale,
-            zmin=cfg.zmin,
-            zmax=cfg.zmax,
-            colorbar=colorbar,
-            contours_coloring="heatmap",
-            ncontours=24,
-            line_width=0.5,
+            zmin=zmin_eff,
+            zmax=zmax_eff,
+            zsmooth="best",
             showscale=True,
+            colorbar=colorbar,
             hovertemplate="X=%{x}<br>Y=%{y}<br>z=%{z}<extra></extra>",
         )
+        contour_lines = go.Contour(
+            z=arr,
+            x=x_coords,
+            y=y_coords,
+            zmin=zmin_eff,
+            zmax=zmax_eff,
+            contours_coloring="lines",
+            ncontours=24,
+            line=dict(color="rgba(0,0,0,0.35)", width=0.5),
+            showscale=False,
+            hoverinfo="skip",
+        )
+        # 라인이 채움 위에 오도록 heatmap 을 먼저, contour 를 나중에 추가한다.
+        # fig.data[0] == heatmap, fig.data[1] == contour.
+        trace = [heatmap_fill, contour_lines]
     else:
         trace = go.Heatmap(
             z=arr,
@@ -452,22 +471,25 @@ def make_matplotlib_heatmap(
 
     fig, ax = plt.subplots(figsize=(6, 5), dpi=dpi)
     if str(cfg.fill_mode).lower() == "contour":
-        # Origin 스타일 등고선(채움) 맵. imshow(origin='upper') 와 방향을 맞추기 위해
-        # 실제 좌표로 contourf 후 y축을 반전(row 0 = 상단)한다.
-        xc = _axis_coords(nx, cfg.step_x, cfg.x0)
-        yc = _axis_coords(ny, cfg.step_y, cfg.y0)
-        X, Y = np.meshgrid(xc, yc)
-        # 화면(Plotly contours_coloring="heatmap")의 연속 채움과 시각적으로 맞추기
-        # 위해 촘촘한 level(60)로 contourf 를 그려 연속처럼 보이게 하고, 얇은 등고선을
-        # 겹쳐 컨투어 맵 성격을 유지한다.
-        im = ax.contourf(
-            X, Y, arr,
-            levels=60,
+        # Origin 스타일 컬러 컨투어 맵. 화면(Plotly: 연속 Heatmap 채움 + 등고선 라인)과
+        # 일치시키기 위해, 픽셀 경로와 동일한 imshow(origin='upper', bilinear)로 "연속"
+        # 채움을 그리고(이 mappable 이 연속 colorbar 를 소유), 그 위에 얇은 등고선 라인을
+        # 겹친다. imshow 는 extent/origin 규약(row 0 = 상단)을 그대로 따르므로 라인도
+        # 동일 물리 좌표로 그리면 채움과 정렬된다.
+        im = ax.imshow(
+            arr,
+            origin="upper",
             cmap=_mpl_cmap(cfg.colormap),
             vmin=cfg.zmin,
             vmax=cfg.zmax,
+            extent=extent,
+            interpolation="bilinear",
+            aspect="equal" if cfg.lock_aspect else "auto",
         )
         try:
+            xc = _axis_coords(nx, cfg.step_x, cfg.x0)
+            yc = _axis_coords(ny, cfg.step_y, cfg.y0)
+            X, Y = np.meshgrid(xc, yc)
             ax.contour(
                 X, Y, arr,
                 levels=12,
@@ -477,8 +499,6 @@ def make_matplotlib_heatmap(
             )
         except Exception:
             pass
-        ax.invert_yaxis()
-        ax.set_aspect("equal" if cfg.lock_aspect else "auto")
     else:
         im = ax.imshow(
             arr,
