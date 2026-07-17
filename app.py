@@ -109,6 +109,9 @@ DEFAULTS = {
     "fmt_bold_title": False, "fmt_italic_title": False, "fmt_color_title": "#000000",
     "fmt_interp": "none", "fmt_aspect": True,
     "fmt_fill": "픽셀(격자)", "fmt_contour_lines": True,
+    # 서식 툴바의 '대상' 선택 — UI 상태일 뿐이라 fmt_ 접두사를 쓰지 않는다
+    # (프리셋 저장/복원은 fmt_ 키만 대상으로 하므로 프리셋이 오염되지 않음).
+    "tb_target": "제목",
     # export
     "exp_dpi": 300,
     "exp_fmt": "PNG (투명)",
@@ -891,6 +894,27 @@ def _apply_auto_z(gridarr):
     st.session_state.fmt_zauto = False
 
 
+# 텍스트 서식 툴바의 대상 필드 (표시명 → 위젯 key)
+_TB_TARGETS = {
+    "제목": "fmt_title",
+    "X축 라벨": "fmt_xlabel",
+    "Y축 라벨": "fmt_ylabel",
+    "Colorbar 라벨": "fmt_cbarlabel",
+}
+
+
+def _tb_insert(markup: str):
+    """서식 툴바 콜백 — 선택된 대상 텍스트 필드 끝에 마크업을 삽입한다.
+
+    Streamlit 의 text_input 은 평문 입력칸이라 커서/드래그 선택 위치를 파이썬이 알 수
+    없다(오리진식 '선택 후 적용'은 커스텀 컴포넌트가 있어야 가능). 그래서 대상 필드를
+    고르고 마크업 껍데기를 끝에 넣어주는 방식으로 구현한다. 위젯 인스턴스화 이전
+    (콜백 시점)에 key 를 갱신하므로 입력칸이 새 값으로 다시 그려진다.
+    """
+    key = _TB_TARGETS[st.session_state.tb_target]
+    st.session_state[key] = (st.session_state.get(key) or "") + markup
+
+
 def _set_camera(azim: float, elev: float, zoom: float):
     """3D 표면 카메라 프리셋 콜백 (위젯 인스턴스화 이전에 key 갱신).
 
@@ -1140,6 +1164,28 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
         # ---- ⑤ 히트맵 서식 ----
         section("⑤ 히트맵 서식", "colormap · z-range · 축 · colorbar · 폰트")
         with st.expander("서식 옵션 펼치기", expanded=True):
+            # ---- 텍스트 서식 툴바 (오리진 스타일) ----
+            # 대상 필드를 고르고 B/I/x²/x₂ 를 누르면 그 필드에 마크업이 삽입된다.
+            _tb = st.columns([1.5, 0.45, 0.45, 0.45, 0.45, 2.7], gap="small")
+            _tb[0].selectbox("서식 대상", list(_TB_TARGETS), key="tb_target",
+                             label_visibility="collapsed")
+            _tb[1].button("**B**", key="tb_bold", use_container_width=True,
+                          on_click=_tb_insert, args=("*{}",),
+                          help="볼드 — 대상 텍스트에 *{ } 삽입")
+            _tb[2].button("*I*", key="tb_italic", use_container_width=True,
+                          on_click=_tb_insert, args=("/{}",),
+                          help="이탤릭 — 대상 텍스트에 /{ } 삽입")
+            _tb[3].button("x²", key="tb_sup", use_container_width=True,
+                          on_click=_tb_insert, args=("^{}",),
+                          help="위첨자 — 대상 텍스트에 ^{ } 삽입")
+            _tb[4].button("x₂", key="tb_sub", use_container_width=True,
+                          on_click=_tb_insert, args=("_{}",),
+                          help="아래첨자 — 대상 텍스트에 _{ } 삽입")
+            _tb[5].caption("대상을 고르고 버튼을 누르면 그 텍스트 끝에 마크업이 "
+                           "추가됩니다. 중괄호 `{ }` 안에 서식을 적용할 글자를 넣으세요. "
+                           "직접 타이핑해도 됩니다.")
+            st.divider()
+
             f1, f2, f3 = st.columns(3, gap="large")
             with f1:
                 st.selectbox("Colormap", COLORMAPS, key="fmt_cmap")
@@ -1172,8 +1218,8 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
                                 step=1, key="fmt_cbarticks")
                 st.caption("값을 높이면 colorbar·컨투어가 더 연속적으로 보입니다.")
                 st.selectbox("폰트", FONTS, key="fmt_font")
-                st.caption("텍스트 일부 서식 — 위첨자 `^{ }` · 아래첨자 `_{ }` · "
-                           "볼드 `*{ }` · 이탤릭 `/{ }`   예: `Raman *{Shift} (cm^{-1})`")
+                st.caption("아래는 요소 **전체**에 적용됩니다. 일부 글자만 바꾸려면 "
+                           "위쪽 툴바(마크업)를 쓰세요.")
                 for _lbl, _sz, _bd, _it, _col in [
                     ("라벨", "fmt_fs_label", "fmt_bold_label", "fmt_italic_label", "fmt_color_label"),
                     ("눈금", "fmt_fs_tick", "fmt_bold_tick", "fmt_italic_tick", "fmt_color_tick"),
