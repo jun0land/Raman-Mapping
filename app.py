@@ -144,12 +144,15 @@ def get_base64_of_bin_file(path) -> str:
         return ""
 
 
-_BG_B64 = get_base64_of_bin_file(APP_DIR / "liquid_bg.png")
+# 배경은 CSS 에 base64 로 인라인되므로 파일 크기가 곧 초기 로딩 비용이다.
+# 원본 4096² PNG(8.9MB → 인라인 11.8MB)는 흰색 72~82% 오버레이에 가려져 해상도가
+# 사실상 낭비였다. 1600² JPEG q82(117KB → 인라인 155KB)로 교체해 76배 줄였다.
+_BG_B64 = get_base64_of_bin_file(APP_DIR / "liquid_bg.jpg")
 _LOGO_B64 = get_base64_of_bin_file(APP_DIR / "logo.png")
 
 _bg_layer = (
     f"linear-gradient(rgba(255,255,255,0.72), rgba(255,255,255,0.82)), "
-    f"url('data:image/png;base64,{_BG_B64}')"
+    f"url('data:image/jpeg;base64,{_BG_B64}')"
     if _BG_B64 else
     "linear-gradient(135deg, #fdf0ec 0%, #f7f7fb 100%)"
 )
@@ -786,7 +789,7 @@ st.markdown(
         {logo_img}
         <div>
             <h2>Raman Mapping Studio</h2>
-            <div class="subtitle">라만 매핑 데이터 · 2D 이미지 생성 및 서식 · Origin 붙여넣기 지원</div>
+            <div class="subtitle">라만 매핑 데이터 · 2D Contour Color Fill 및 3D Color Map Surface 지원</div>
         </div>
     </div>
     """,
