@@ -179,6 +179,21 @@ def _plotly_font_dict(cfg: "PlotConfig", elem: str) -> dict:
     )
 
 
+# 제목 위치 → plotly title.x 값
+_TITLE_X = {"left": 0.0, "center": 0.5, "right": 1.0}
+
+
+def _z_label(cfg: "PlotConfig") -> str:
+    """3D Z축 라벨. 지정이 없으면 colorbar_label 로 폴백(기존 동작)."""
+    return cfg.z_label if str(cfg.z_label).strip() else cfg.colorbar_label
+
+
+def _title_pos(cfg: "PlotConfig") -> str:
+    """제목 위치 정규화. 알 수 없는 값은 center."""
+    pos = str(getattr(cfg, "title_pos", "center")).lower()
+    return pos if pos in _TITLE_X else "center"
+
+
 def _mpl_font_kw(cfg: "PlotConfig", elem: str) -> dict:
     """요소별 matplotlib 텍스트 kwargs (fontsize,fontfamily,color,fontweight,fontstyle)."""
     return dict(
@@ -245,6 +260,8 @@ class PlotConfig:
     # 축 / 물리 좌표
     x_label: str = "X (μm)"
     y_label: str = "Y (μm)"
+    # 3D 표면 Z축 라벨. 빈 문자열이면 colorbar_label 을 따른다(기존 동작 유지).
+    z_label: str = ""
     title: str = ""
     step_x: float = 1.0
     step_y: float = 1.0
@@ -272,6 +289,8 @@ class PlotConfig:
     font_bold_title: bool = False
     font_italic_title: bool = False
     font_color_title: str = "#000000"
+    # 제목 위치 (Origin 스타일): "left" | "center" | "right"
+    title_pos: str = "center"
 
     # 렌더링
     interpolation: str = "none"
@@ -492,7 +511,8 @@ def make_heatmap(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
 
     fig.update_layout(
         title=dict(text=apply_text_markup(cfg.title, "plotly"),
-                   font=_plotly_font_dict(cfg, "title")),
+                   font=_plotly_font_dict(cfg, "title"),
+                   x=_TITLE_X[_title_pos(cfg)], xanchor=_title_pos(cfg)),
         xaxis=xaxis,
         yaxis=yaxis,
         font=dict(family=_plotly_font(cfg.font_family)),
@@ -585,7 +605,8 @@ def make_matplotlib_heatmap(
     ax.set_xlabel(apply_text_markup(cfg.x_label, "mpl"), **_mpl_font_kw(cfg, "label"))
     ax.set_ylabel(apply_text_markup(cfg.y_label, "mpl"), **_mpl_font_kw(cfg, "label"))
     if cfg.title:
-        ax.set_title(apply_text_markup(cfg.title, "mpl"), **_mpl_font_kw(cfg, "title"))
+        ax.set_title(apply_text_markup(cfg.title, "mpl"), loc=_title_pos(cfg),
+                     **_mpl_font_kw(cfg, "title"))
 
     tick_kw = _mpl_font_kw(cfg, "tick")
     ax.tick_params(labelsize=tick_kw["fontsize"], labelcolor=tick_kw["color"])
@@ -701,7 +722,7 @@ def make_surface(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
                               font=_plotly_font_dict(cfg, "label")),
                    tickfont=_plotly_font_dict(cfg, "tick"),
                    showticklabels=cfg.show_ticks, autorange="reversed"),
-        zaxis=dict(title=dict(text=apply_text_markup(cfg.colorbar_label, "plotly"),
+        zaxis=dict(title=dict(text=apply_text_markup(_z_label(cfg), "plotly"),
                               font=_plotly_font_dict(cfg, "label")),
                    tickfont=_plotly_font_dict(cfg, "tick")),
         # 마우스 드래그(자유 시점)는 서버로 전달되지 않으므로, 화면·export 각도를
@@ -721,7 +742,8 @@ def make_surface(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
 
     fig.update_layout(
         title=dict(text=apply_text_markup(cfg.title, "plotly"),
-                   font=_plotly_font_dict(cfg, "title")),
+                   font=_plotly_font_dict(cfg, "title"),
+                   x=_TITLE_X[_title_pos(cfg)], xanchor=_title_pos(cfg)),
         scene=scene,
         font=dict(family=fam),
         margin=dict(l=10, r=10, t=50 if cfg.title else 20, b=10),
@@ -778,9 +800,10 @@ def make_matplotlib_surface(
 
     ax.set_xlabel(apply_text_markup(cfg.x_label, "mpl"), **_mpl_font_kw(cfg, "label"))
     ax.set_ylabel(apply_text_markup(cfg.y_label, "mpl"), **_mpl_font_kw(cfg, "label"))
-    ax.set_zlabel(apply_text_markup(cfg.colorbar_label, "mpl"), **_mpl_font_kw(cfg, "label"))
+    ax.set_zlabel(apply_text_markup(_z_label(cfg), "mpl"), **_mpl_font_kw(cfg, "label"))
     if cfg.title:
-        ax.set_title(apply_text_markup(cfg.title, "mpl"), **_mpl_font_kw(cfg, "title"))
+        ax.set_title(apply_text_markup(cfg.title, "mpl"), loc=_title_pos(cfg),
+                     **_mpl_font_kw(cfg, "title"))
     tick_kw = _mpl_font_kw(cfg, "tick")
     ax.tick_params(labelsize=tick_kw["fontsize"], labelcolor=tick_kw["color"])
     # 히트맵(row 0 = 상단)과 방향 일치: y축 반전

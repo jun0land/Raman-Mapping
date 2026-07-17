@@ -14,6 +14,7 @@ import io
 import json
 import os
 import zipfile
+from html import escape
 from pathlib import Path
 
 import numpy as np
@@ -32,6 +33,22 @@ def section(label: str, description: str = "") -> None:
     st.subheader(label, divider="orange")
     if description:
         st.caption(description)
+
+
+def hint_label(text: str, info: str = "", warn: str = "") -> str:
+    """라벨 + 호버 툴팁 아이콘 HTML.
+
+    라벨을 위젯 왼쪽에 두는 배치에서는 위젯 label 을 collapsed 로 숨기므로
+    Streamlit 기본 help 아이콘을 쓸 수 없다. 그래서 브라우저 기본 title 툴팁을
+    쓰는 아이콘(❓ 설명 · ⚠️ 주의)을 라벨 옆에 직접 붙인다.
+    (라벨이 보이는 위젯은 Streamlit 의 help= 를 그대로 쓰는 편이 낫다.)
+    """
+    out = f"<span style='font-weight:600'>{escape(text)}</span>"
+    if warn:
+        out += (f" <span title='{escape(warn)}' style='cursor:help'>⚠️</span>")
+    if info:
+        out += (f" <span title='{escape(info)}' style='cursor:help'>❓</span>")
+    return out
 
 
 # ===========================================================================
@@ -98,14 +115,17 @@ DEFAULTS = {
     # 서식
     "fmt_cmap": "jet", "fmt_zmin": 0.0, "fmt_zmax": 1.0, "fmt_zauto": True,
     "fmt_xlabel": "X (μm)", "fmt_ylabel": "Y (μm)", "fmt_title": "",
+    # 3D 표면 Z축 라벨. 빈 값이면 Colorbar 라벨을 따른다.
+    "fmt_zlabel": "",
+    "fmt_title_pos": "center",
     "fmt_stepx": 1.0, "fmt_stepy": 1.0,
     "fmt_showticks": True, "fmt_tickspacing": 0.0,
     "fmt_cbarlabel": "Intensity (a.u.)", "fmt_cbarticks": 5,
-    "fmt_font": "Arial", "fmt_fs_label": 14, "fmt_fs_tick": 12, "fmt_fs_title": 16,
+    "fmt_font": "Arial", "fmt_fs_label": 30, "fmt_fs_tick": 30, "fmt_fs_title": 30,
     "fmt_bold_label": False, "fmt_italic_label": False, "fmt_color_label": "#000000",
     "fmt_bold_tick": False, "fmt_italic_tick": False, "fmt_color_tick": "#000000",
     "fmt_bold_title": False, "fmt_italic_title": False, "fmt_color_title": "#000000",
-    "fmt_interp": "none", "fmt_aspect": True,
+    "fmt_interp": "none",
     "fmt_fill": "픽셀(격자)", "fmt_contour_lines": True,
     # 서식 툴바의 '대상' 선택 — UI 상태일 뿐이라 fmt_ 접두사를 쓰지 않는다
     # (프리셋 저장/복원은 fmt_ 키만 대상으로 하므로 프리셋이 오염되지 않음).
@@ -582,6 +602,7 @@ def build_plot_config(grid_arr: np.ndarray | None = None) -> plot.PlotConfig:
     return plot.PlotConfig(
         colormap=ss.fmt_cmap, zmin=zmin, zmax=zmax,
         x_label=ss.fmt_xlabel, y_label=ss.fmt_ylabel, title=ss.fmt_title,
+        z_label=ss.fmt_zlabel, title_pos=ss.fmt_title_pos,
         step_x=float(ss.fmt_stepx), step_y=float(ss.fmt_stepy),
         show_ticks=ss.fmt_showticks, tick_spacing=tick,
         colorbar_label=ss.fmt_cbarlabel, colorbar_ticks=int(ss.fmt_cbarticks),
@@ -593,7 +614,9 @@ def build_plot_config(grid_arr: np.ndarray | None = None) -> plot.PlotConfig:
         font_color_tick=ss.fmt_color_tick,
         font_bold_title=ss.fmt_bold_title, font_italic_title=ss.fmt_italic_title,
         font_color_title=ss.fmt_color_title,
-        interpolation=ss.fmt_interp, lock_aspect=ss.fmt_aspect,
+        # 매핑 그리드는 픽셀 1개가 항상 정사각(1:1)이어야 하므로 종횡비를 상시 고정한다
+        # (가로/세로로 늘릴 일이 없어 사용자 옵션으로 두지 않는다).
+        interpolation=ss.fmt_interp, lock_aspect=True,
         fill_mode=("contour" if ss.fmt_fill == "등고선(contour)" else "pixel"),
         show_contour_lines=ss.fmt_contour_lines,
         cam_azim=float(ss.cam_azim), cam_elev=float(ss.cam_elev),
@@ -1218,7 +1241,17 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
             with f2:
                 st.text_input("X 축 라벨", key="fmt_xlabel")
                 st.text_input("Y 축 라벨", key="fmt_ylabel")
-                st.text_input("제목", key="fmt_title")
+                st.text_input("Z 축 라벨 (3D)", key="fmt_zlabel",
+                              placeholder="비우면 Colorbar 라벨을 따름",
+                              help="3D 표면의 Z축 라벨. 비워두면 Colorbar 라벨과 "
+                                   "같은 값을 사용합니다.")
+                tt1, tt2 = st.columns([1.4, 1], vertical_alignment="bottom")
+                tt1.text_input("제목", key="fmt_title")
+                tt2.selectbox("위치", ["left", "center", "right"],
+                              key="fmt_title_pos",
+                              format_func=lambda p: {"left": "왼쪽", "center": "가운데",
+                                                     "right": "오른쪽"}[p],
+                              help="제목 위치 (프리셋에 저장됩니다).")
                 st.number_input("Step X (μm)", min_value=0.0001, step=0.1,
                                 key="fmt_stepx", format="%.4g")
                 st.number_input("Step Y (μm)", min_value=0.0001, step=0.1,
@@ -1238,7 +1271,7 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
                 ]:
                     _r = st.columns([1.1, 1.2, 0.7, 0.7, 0.8])
                     _r[0].markdown(f"**{_lbl}**")
-                    _r[1].number_input("크기", min_value=6, max_value=40, key=_sz,
+                    _r[1].number_input("크기", min_value=6, max_value=50, key=_sz,
                                        label_visibility="collapsed")
                     _r[2].checkbox("B", key=_bd)
                     _r[3].checkbox("I", key=_it)
@@ -1247,7 +1280,6 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
                 st.number_input("눈금 간격 (μm, 0=자동)", min_value=0.0, step=1.0,
                                 key="fmt_tickspacing")
                 st.selectbox("Interpolation", ["none", "bilinear"], key="fmt_interp")
-                st.checkbox("1:1 종횡비 고정", key="fmt_aspect")
 
         if grid_err is not None:
             st.error(f"⚠️ {grid_err}")
@@ -1399,13 +1431,25 @@ with tab_map:
         with c_pre:
             section("② 전처리 (선택)", "cosmic · baseline · smoothing · normalize")
             with st.expander("전처리 옵션 펼치기", expanded=False):
-                # --- Baseline 보정: 열 전체 너비 (긴 ALS 경고 캡션이 눌리지 않도록) ---
-                st.markdown("**Baseline 보정**")
-                st.selectbox("Baseline 보정", ["off", "als", "poly"],
-                             key="pp_baseline", label_visibility="collapsed")
-                st.caption("⚠️ ALS는 400 스펙트럼에 약 4초 걸립니다(가장 무거운 단계). "
-                           "빠른 작업은 off 또는 poly 를 권장합니다. 동일 설정은 캐시되어 "
-                           "재계산 없이 즉시 반영됩니다.")
+                # --- Baseline 보정: 라벨 왼쪽 · 선택 버튼 오른쪽(폭 축소) ---
+                #     긴 ALS 경고는 캡션 대신 ⚠️ 호버 툴팁으로 접어 세로 공간을 아낀다.
+                bl1, bl2 = st.columns([1.35, 1], vertical_alignment="center")
+                bl1.markdown(
+                    hint_label(
+                        "Baseline 보정",
+                        info=("스펙트럼 아래 깔린 완만한 배경(형광 등)을 추정해 빼는 단계.\n"
+                              "• als — Asymmetric Least Squares: 피크는 남기고 배경만 "
+                              "반복적으로 추정해 제거. 배경이 복잡해도 잘 맞지만 느림.\n"
+                              "• poly — 다항식 피팅으로 배경을 근사해 제거. 훨씬 빠르지만 "
+                              "배경이 복잡하면 부정확할 수 있음."),
+                        warn=("ALS는 400 스펙트럼에 약 4초 걸립니다(가장 무거운 단계). "
+                              "빠른 작업은 off 또는 poly 를 권장합니다. "
+                              "동일 설정은 캐시되어 재계산 없이 즉시 반영됩니다."),
+                    ),
+                    unsafe_allow_html=True,
+                )
+                bl2.selectbox("Baseline 보정", ["off", "als", "poly"],
+                              key="pp_baseline", label_visibility="collapsed")
                 if st.session_state.pp_baseline == "als":
                     ba1, ba2, ba3 = st.columns(3)
                     ba1.number_input("ALS λ (lam)", min_value=1.0,
@@ -1423,19 +1467,42 @@ with tab_map:
                 # --- 나머지 전처리(Cosmic / Smoothing / Normalization): 2열 ---
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.checkbox("Cosmic ray 제거", key="pp_cosmic")
+                    # 라벨이 보이는 위젯은 Streamlit 기본 help(❓ 아이콘)를 그대로 쓴다.
+                    st.checkbox(
+                        "Cosmic ray 제거", key="pp_cosmic",
+                        help=("우주선(cosmic ray)이 검출기에 직접 튀어 생기는 1~2채널 폭의 "
+                              "비정상적으로 뾰족한 스파이크를 제거합니다. 이웃 대비 "
+                              "이상치(MAD 배수 기준)를 찾아 주변 값으로 대체합니다. "
+                              "threshold 가 낮을수록 더 공격적으로 제거합니다."))
                     if st.session_state.pp_cosmic:
                         st.number_input("threshold (MAD 배수)", min_value=1.0,
                                         max_value=20.0, step=0.5, key="pp_cosmic_thr")
                         st.number_input("window (홀수)", min_value=3, max_value=51,
                                         step=2, key="pp_cosmic_win")
-                    st.selectbox("Normalization", ["off", "max", "peak"],
-                                 key="pp_norm")
+                    # Normalization: 라벨 왼쪽 · 선택 버튼 오른쪽
+                    nm1, nm2 = st.columns([1.35, 1], vertical_alignment="center")
+                    nm1.markdown(
+                        hint_label(
+                            "Normalization",
+                            info=("스펙트럼 간 세기 차이를 없애 비교 가능하게 만드는 단계.\n"
+                                  "• max — 각 스펙트럼을 자신의 최댓값으로 나눠 0~1 로 정규화.\n"
+                                  "• peak — 지정한 기준 파수의 세기로 나눠, 그 피크 대비 "
+                                  "상대 세기로 비교."),
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                    nm2.selectbox("Normalization", ["off", "max", "peak"],
+                                  key="pp_norm", label_visibility="collapsed")
                     if st.session_state.pp_norm == "peak":
                         st.number_input("기준 파수 (cm⁻¹)", min_value=wmin,
                                         max_value=wmax, step=1.0, key="pp_norm_peak")
                 with c2:
-                    st.checkbox("Savitzky-Golay 평활", key="pp_smooth")
+                    st.checkbox(
+                        "Savitzky-Golay 평활", key="pp_smooth",
+                        help=("이동 창 안에서 다항식을 피팅해 노이즈를 줄이는 필터. "
+                              "단순 이동평균과 달리 피크의 높이·폭을 비교적 잘 보존합니다.\n"
+                              "• window — 창 크기(홀수). 클수록 매끄럽지만 피크가 뭉개짐.\n"
+                              "• polyorder — 피팅 다항식 차수. 낮을수록 더 강하게 평활."))
                     if st.session_state.pp_smooth:
                         st.number_input("window (홀수)", min_value=3, max_value=101,
                                         step=2, key="pp_smooth_win")
