@@ -1,0 +1,5 @@
+[server]
+# static/ 폴더를 app/static/<파일> 경로로 서빙한다.
+# 배경·로고를 base64 로 CSS 에 인라인하면 캐시가 불가능해 전체 rerun 마다 재전송되지만,
+# 정적 파일로 서빙하면 브라우저가 캐시하므로 최초 1회만 내려받는다.
+enableStaticServing = true

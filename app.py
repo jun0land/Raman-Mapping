@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import base64
 import io
 import json
 import os
@@ -20,7 +19,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from core import loader, preprocess, extract, grid, plot
 
@@ -138,25 +136,23 @@ st.set_page_config(page_title="Raman Mapping Studio", layout="wide",
 init_state()
 
 
-def get_base64_of_bin_file(path) -> str:
-    """바이너리 파일을 base64 문자열로. 파일이 없으면 '' 반환(우아한 처리)."""
-    try:
-        with open(path, "rb") as f:
-            return base64.b64encode(f.read()).decode()
-    except Exception:
-        return ""
+# 이미지는 static/ 정적 서빙(.streamlit/config.toml 의 enableStaticServing)으로 제공한다.
+# base64 로 CSS 에 인라인하면 브라우저가 캐시할 수 없어 전체 rerun 마다 재전송되지만,
+# 정적 URL 이면 최초 1회만 내려받고 이후 캐시된다.
+# (배경 원본 4096² PNG 8.9MB → 인라인 11.8MB 였던 것을 1600² JPEG 117KB 로 줄인 뒤
+#  정적 서빙으로 전환 — 인라인 페이로드 0.)
+_STATIC = "app/static"          # Streamlit 정적 서빙 경로 (앱 루트 기준 상대 URL)
+_BG_URL = f"{_STATIC}/liquid_bg.jpg"
+_LOGO_URL = f"{_STATIC}/logo.png"
 
-
-# 배경은 CSS 에 base64 로 인라인되므로 파일 크기가 곧 초기 로딩 비용이다.
-# 원본 4096² PNG(8.9MB → 인라인 11.8MB)는 흰색 72~82% 오버레이에 가려져 해상도가
-# 사실상 낭비였다. 1600² JPEG q82(117KB → 인라인 155KB)로 교체해 76배 줄였다.
-_BG_B64 = get_base64_of_bin_file(APP_DIR / "liquid_bg.jpg")
-_LOGO_B64 = get_base64_of_bin_file(APP_DIR / "logo.png")
+# 파일이 없으면 배경 없이 그라데이션으로 우아하게 폴백한다.
+_has_bg = (APP_DIR / "static" / "liquid_bg.jpg").exists()
+_has_logo = (APP_DIR / "static" / "logo.png").exists()
 
 _bg_layer = (
     f"linear-gradient(rgba(255,255,255,0.72), rgba(255,255,255,0.82)), "
-    f"url('data:image/jpeg;base64,{_BG_B64}')"
-    if _BG_B64 else
+    f"url('{_BG_URL}')"
+    if _has_bg else
     "linear-gradient(135deg, #fdf0ec 0%, #f7f7fb 100%)"
 )
 
@@ -239,6 +235,16 @@ html, body, [class*="css"], .stApp, button, input, textarea, select {{
     border-bottom: 3px solid {ACCENT} !important;
 }}
 
+/* 매뉴얼 JS 주입용 iframe — 화면 공간을 차지하지 않도록 컨테이너를 접는다.
+   (display:none 대신 height:0 으로 두어 iframe 이 확실히 로드·실행되게 한다) */
+.st-key-manual_inject {{
+    height: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}}
+
 /* 콘텐츠 고정 최대폭 + 가운데 정렬 — 넓은 모니터에서 여백만 늘고 레이아웃은 동일하게
    유지(공간만 늘어나 성겨 보이는 문제 방지). 좁은 화면에서는 자연스럽게 reflow. */
 .block-container {{
@@ -299,7 +305,7 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # 1.5 사용 설명서 슬라이드-인 패널 (self-contained JS 오버레이)
 # ===========================================================================
 # Streamlit 의 st.markdown 은 <script> 를 제거하므로, 전체 화면 오버레이(북마크 탭·
-# 딤 배경·슬라이드 패널)는 components.html(iframe) 안의 JS 가 window.parent.document
+# 딤 배경·슬라이드 패널)는 st.iframe 안의 JS 가 window.parent.document
 # 에 직접 주입해 만든다. localhost 는 same-origin 이라 parent 접근이 가능하지만 모든
 # parent 접근은 try/catch 로 감싼다(호스팅 환경이 cross-origin 이면 조용히 무시됨).
 # 슬라이드 애니메이션은 순수 CSS transition(transform)으로 처리(파이썬 왕복 없음).
@@ -495,7 +501,12 @@ def render_manual_panel() -> None:
     app.py 최상단에서 한 번만 호출 → 모든 화면·탭에 북마크 탭이 노출된다.
     height=0 iframe 이라 레이아웃을 차지하지 않는다.
     """
-    components.html(_MANUAL_HTML, height=0)
+    # st.iframe 은 height=0 을 거부한다(양수/'stretch'/'content'만 허용). 이 iframe 은
+    # JS 주입 용도라 화면 공간을 차지하면 안 되므로, key 로 식별되는 컨테이너에 담고
+    # CSS(.st-key-manual_inject)로 높이를 접는다. display:none 대신 height:0+overflow
+    # 를 쓰는 이유는 iframe 이 확실히 로드·실행되게 하기 위해서다.
+    with st.container(key="manual_inject"):
+        st.iframe(_MANUAL_HTML, height=1)
 
 
 # 최상단에서 1회 호출 (모든 탭/화면에 북마크 탭 상시 노출)
@@ -759,8 +770,8 @@ def grid_xlsx_bytes(gridarr) -> bytes:
 # 5. 사이드바 — 파일 업로드 / 그리드 / Export / 프리셋 / Reset
 # ===========================================================================
 with st.sidebar:
-    logo_html = (f"<img src='data:image/png;base64,{_LOGO_B64}' "
-                 f"style='height:40px;margin-bottom:8px;'/>" if _LOGO_B64 else "")
+    logo_html = (f"<img src='{_LOGO_URL}' "
+                 f"style='height:40px;margin-bottom:8px;'/>" if _has_logo else "")
     st.markdown(logo_html, unsafe_allow_html=True)
     st.markdown("#### ⚙️ 전역 설정")
 
@@ -785,7 +796,7 @@ if up is not None:
 # ===========================================================================
 # 6. 타이틀 헤더
 # ===========================================================================
-logo_img = (f"<img src='data:image/png;base64,{_LOGO_B64}'/>" if _LOGO_B64 else "")
+logo_img = (f"<img src='{_LOGO_URL}'/>" if _has_logo else "")
 st.markdown(
     f"""
     <div class="title-glass-container">
