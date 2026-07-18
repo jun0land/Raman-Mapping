@@ -27,6 +27,7 @@ __all__ = [
     "PlotConfig",
     "auto_zrange",
     "make_heatmap",
+    "add_click_grid",
     "make_matplotlib_heatmap",
     "make_surface",
     "make_matplotlib_surface",
@@ -520,6 +521,26 @@ def make_heatmap(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
         template="plotly_white",
     )
     return fig
+
+
+def add_click_grid(fig: "go.Figure", ny: int, nx: int,
+                   config: Optional[PlotConfig] = None) -> None:
+    """2D 히트맵 위에 투명 클릭 타깃 산점 레이어를 추가한다 (in-place).
+
+    plotly 의 Heatmap 트레이스는 클릭/박스 선택(selection) 이벤트를 지원하지 않아
+    st.plotly_chart(on_select=...) 로는 픽셀 클릭이 잡히지 않는다. 픽셀 중심마다
+    완전 투명한 마커를 깔아 두면 클릭이 산점 포인트로 잡혀 (x, y)가 이벤트에 실린다.
+    hover 는 숨겨 히트맵 자체 hovertemplate 를 방해하지 않는다.
+    """
+    cfg = config or PlotConfig()
+    xs = _axis_coords(nx, cfg.step_x, cfg.x0)
+    ys = _axis_coords(ny, cfg.step_y, cfg.y0)
+    X, Y = np.meshgrid(xs, ys)
+    fig.add_trace(go.Scattergl(
+        x=X.ravel(), y=Y.ravel(), mode="markers",
+        marker=dict(size=14, opacity=0),
+        hoverinfo="skip", showlegend=False, name="_click_targets",
+    ))
 
 
 # ---------------------------------------------------------------------------

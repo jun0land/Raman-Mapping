@@ -149,6 +149,14 @@ def init_state():
     for k, v in DEFAULTS.items():
         if k not in st.session_state:
             st.session_state[k] = v
+    # 1회성 세션 복구: 과거 위젯 상태 유실 버그로 폰트 크기가 min_value(6)로
+    # 떨어진 채 세션에 고착된 값을 기본값(30)으로 되돌린다. 마커를 남겨 세션당
+    # 한 번만 수행하므로, 이후 사용자가 의도적으로 6을 고르는 것은 존중된다.
+    if not st.session_state.get("_fs_repair_done"):
+        for k in ("fmt_fs_label", "fmt_fs_tick", "fmt_fs_title"):
+            if st.session_state.get(k) == 6:
+                st.session_state[k] = DEFAULTS[k]
+        st.session_state["_fs_repair_done"] = True
 
 
 # ===========================================================================
@@ -290,7 +298,9 @@ html, body, [class*="css"], .stApp, button, input, textarea, select {{
     border-radius: 10px !important;
 }}
 
-/* 색상 선택 스와치 — 기본이 과하게 커서 아담한 정사각으로 축소 */
+/* 색상 선택 스와치 — 기본이 과하게 커서 아담한 정사각으로 축소.
+   바깥 컨테이너가 원래 높이를 유지해 위로 붙어 보이므로, 컨테이너 높이를 줄이고
+   flex 로 세로 중앙 정렬한다 (같은 행의 크기 입력칸과 눈높이 일치). */
 [data-testid="stColorPickerBlock"] {{
     width: 30px !important;
     height: 30px !important;
@@ -298,6 +308,9 @@ html, body, [class*="css"], .stApp, button, input, textarea, select {{
 }}
 [data-testid="stColorPicker"] {{
     min-height: 0 !important;
+    height: 100% !important;
+    display: flex !important;
+    align-items: center !important;
 }}
 
 /* 버튼 */
@@ -1360,6 +1373,9 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
                 st.caption("최종 컨투어 맵 — 스펙트럼 QC 는 아래 X/Y 픽셀 입력을 "
                            "사용하세요.")
             else:
+                # Heatmap 트레이스는 selection 이벤트를 지원하지 않으므로,
+                # 투명 클릭 타깃(산점)을 겹쳐 픽셀 클릭이 확실히 잡히게 한다.
+                plot.add_click_grid(final_fig, *gridarr.shape, pcfg)
                 event = st.plotly_chart(final_fig, use_container_width=True,
                                         key="final_heatmap", on_select="rerun",
                                         selection_mode=("points", "box"))
