@@ -290,6 +290,16 @@ html, body, [class*="css"], .stApp, button, input, textarea, select {{
     border-radius: 10px !important;
 }}
 
+/* 색상 선택 스와치 — 기본이 과하게 커서 아담한 정사각으로 축소 */
+[data-testid="stColorPickerBlock"] {{
+    width: 30px !important;
+    height: 30px !important;
+    border-radius: 8px !important;
+}}
+[data-testid="stColorPicker"] {{
+    min-height: 0 !important;
+}}
+
 /* 버튼 */
 .stButton > button, .stDownloadButton > button {{
     background: rgba(255,255,255,0.35);
@@ -1149,6 +1159,10 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
     """
     global _export_used_fallback
     ss = st.session_state
+    # 프래그먼트 단독 rerun 중에는 스크립트 최상단의 init_state()가 실행되지 않는다.
+    # 위젯 상태가 정리(cleanup)로 사라진 채 위젯이 다시 만들어지면 number_input 이
+    # min_value(예: 크기 6)로 떨어지므로, 위젯 생성 전에 기본값을 재시드한다.
+    init_state()
 
     # 좌: 컨트롤(③④⑤) · 우: 최종 뷰. 왼쪽에서 값을 조정하면 오른쪽 맵이 즉시 반영되어
     # "조정하며 결과 보기"가 한 화면에서 된다. gap="large" 로 두 열 사이 여백을 확보.
@@ -1285,20 +1299,20 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
                                 step=1, key="fmt_cbarticks")
                 st.caption("값을 높이면 colorbar·컨투어가 더 연속적으로 보입니다.")
                 st.selectbox("폰트", FONTS, key="fmt_font")
-                st.caption("아래는 요소 **전체**에 적용됩니다. 일부 글자만 바꾸려면 "
-                           "위쪽 툴바(마크업)를 쓰세요.")
-                for _lbl, _sz, _bd, _it, _col in [
-                    ("라벨", "fmt_fs_label", "fmt_bold_label", "fmt_italic_label", "fmt_color_label"),
-                    ("눈금", "fmt_fs_tick", "fmt_bold_tick", "fmt_italic_tick", "fmt_color_tick"),
-                    ("제목", "fmt_fs_title", "fmt_bold_title", "fmt_italic_title", "fmt_color_title"),
+                st.caption("크기·색은 요소 **전체**에 적용됩니다. "
+                           "볼드/이탤릭·첨자는 위쪽 툴바(마크업)를 쓰세요.")
+                # 볼드/이탤릭 체크박스는 제거 — 툴바 마크업(*{ } /{ })으로 갈음.
+                # (fmt_bold_*/fmt_italic_* 키는 프리셋 호환을 위해 세션에 유지)
+                for _lbl, _sz, _col in [
+                    ("라벨", "fmt_fs_label", "fmt_color_label"),
+                    ("눈금", "fmt_fs_tick", "fmt_color_tick"),
+                    ("제목", "fmt_fs_title", "fmt_color_title"),
                 ]:
-                    _r = st.columns([1.1, 1.2, 0.7, 0.7, 0.8])
+                    _r = st.columns([1.0, 1.5, 0.9], vertical_alignment="center")
                     _r[0].markdown(f"**{_lbl}**")
                     _r[1].number_input("크기", min_value=6, max_value=50, key=_sz,
                                        label_visibility="collapsed")
-                    _r[2].checkbox("B", key=_bd)
-                    _r[3].checkbox("I", key=_it)
-                    _r[4].color_picker("색", key=_col, label_visibility="collapsed")
+                    _r[2].color_picker("색", key=_col, label_visibility="collapsed")
                 st.checkbox("눈금 표시", key="fmt_showticks")
                 st.number_input("눈금 간격 (μm, 0=자동)", min_value=0.0, step=1.0,
                                 key="fmt_tickspacing")
