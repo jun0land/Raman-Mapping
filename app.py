@@ -1433,7 +1433,8 @@ with tab_map:
             with st.expander("전처리 옵션 펼치기", expanded=False):
                 # --- Baseline 보정: 라벨 왼쪽 · 선택 버튼 오른쪽(폭 축소) ---
                 #     긴 ALS 경고는 캡션 대신 ⚠️ 호버 툴팁으로 접어 세로 공간을 아낀다.
-                bl1, bl2 = st.columns([1.35, 1], vertical_alignment="center")
+                #     Normalization 과 같은 [2.6, 1] 비율 → 두 선택창 폭이 동일.
+                bl1, bl2 = st.columns([2.6, 1], vertical_alignment="center")
                 bl1.markdown(
                     hint_label(
                         "Baseline 보정",
@@ -1462,10 +1463,8 @@ with tab_map:
                     st.number_input("다항식 차수", min_value=0, max_value=15,
                                     step=1, key="pp_poly_order")
 
-                st.divider()
-
-                # --- Normalization: Baseline 아래 풀폭(라벨 왼쪽 · 선택 오른쪽) ---
-                #     넓은 폭을 활용하도록 열 분할 없이 배치한다.
+                # --- Normalization: Baseline 바로 아래(구분선 없이, 여백 최소화) ---
+                #     Baseline 과 동일한 [2.6, 1] 비율로 선택창 폭을 맞춘다.
                 nm1, nm2 = st.columns([2.6, 1], vertical_alignment="center")
                 nm1.markdown(
                     hint_label(
