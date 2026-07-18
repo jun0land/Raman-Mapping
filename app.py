@@ -1464,7 +1464,28 @@ with tab_map:
 
                 st.divider()
 
-                # --- 나머지 전처리(Cosmic / Smoothing / Normalization): 2열 ---
+                # --- Normalization: Baseline 아래 풀폭(라벨 왼쪽 · 선택 오른쪽) ---
+                #     넓은 폭을 활용하도록 열 분할 없이 배치한다.
+                nm1, nm2 = st.columns([2.6, 1], vertical_alignment="center")
+                nm1.markdown(
+                    hint_label(
+                        "Normalization",
+                        info=("스펙트럼 간 세기 차이를 없애 비교 가능하게 만드는 단계.\n"
+                              "• max — 각 스펙트럼을 자신의 최댓값으로 나눠 0~1 로 정규화.\n"
+                              "• peak — 지정한 기준 파수의 세기로 나눠, 그 피크 대비 "
+                              "상대 세기로 비교."),
+                    ),
+                    unsafe_allow_html=True,
+                )
+                nm2.selectbox("Normalization", ["off", "max", "peak"],
+                              key="pp_norm", label_visibility="collapsed")
+                if st.session_state.pp_norm == "peak":
+                    st.number_input("기준 파수 (cm⁻¹)", min_value=wmin,
+                                    max_value=wmax, step=1.0, key="pp_norm_peak")
+
+                st.divider()
+
+                # --- Cosmic / Smoothing: 2열 ---
                 c1, c2 = st.columns(2)
                 with c1:
                     # 라벨이 보이는 위젯은 Streamlit 기본 help(❓ 아이콘)를 그대로 쓴다.
@@ -1479,23 +1500,6 @@ with tab_map:
                                         max_value=20.0, step=0.5, key="pp_cosmic_thr")
                         st.number_input("window (홀수)", min_value=3, max_value=51,
                                         step=2, key="pp_cosmic_win")
-                    # Normalization: 라벨 왼쪽 · 선택 버튼 오른쪽
-                    nm1, nm2 = st.columns([1.35, 1], vertical_alignment="center")
-                    nm1.markdown(
-                        hint_label(
-                            "Normalization",
-                            info=("스펙트럼 간 세기 차이를 없애 비교 가능하게 만드는 단계.\n"
-                                  "• max — 각 스펙트럼을 자신의 최댓값으로 나눠 0~1 로 정규화.\n"
-                                  "• peak — 지정한 기준 파수의 세기로 나눠, 그 피크 대비 "
-                                  "상대 세기로 비교."),
-                        ),
-                        unsafe_allow_html=True,
-                    )
-                    nm2.selectbox("Normalization", ["off", "max", "peak"],
-                                  key="pp_norm", label_visibility="collapsed")
-                    if st.session_state.pp_norm == "peak":
-                        st.number_input("기준 파수 (cm⁻¹)", min_value=wmin,
-                                        max_value=wmax, step=1.0, key="pp_norm_peak")
                 with c2:
                     st.checkbox(
                         "Savitzky-Golay 평활", key="pp_smooth",
