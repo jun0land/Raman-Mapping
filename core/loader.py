@@ -568,7 +568,12 @@ def load_file(path_or_buffer: Any, filename: Optional[str] = None) -> RamanData:
 
 
 def validate_grid(n_points: int, nx: int, ny: int) -> None:
-    """포인트 수와 그리드 크기 정합성 검증.
+    """그리드 크기가 포인트 수를 초과하지 않는지 검증.
+
+    XY 매핑에서는 메타데이터 Map Width/Height 로 그리드를 정하고, 깊이(z) 스택 등으로
+    남는 포인트는 무시한다. 따라서 nx*ny <= n_points 이면 허용하고(초과 포인트는
+    호출부에서 앞에서부터 nx*ny 개만 사용), 그리드가 포인트보다 큰 경우
+    (nx*ny > n_points)에만 값이 부족하므로 에러를 낸다.
 
     Args:
         n_points: 실제 측정 포인트 수.
@@ -576,9 +581,10 @@ def validate_grid(n_points: int, nx: int, ny: int) -> None:
         ny: 그리드 세로 셀 수.
 
     Raises:
-        ValueError: nx*ny != n_points 일 때 친절한 한국어 메시지로 발생.
+        ValueError: nx*ny > n_points (그리드가 포인트 수보다 큼) 일 때.
     """
-    if nx * ny != n_points:
+    if nx * ny > n_points:
         raise ValueError(
-            f"포인트 수({n_points})가 그리드({nx}×{ny}={nx * ny})와 맞지 않습니다"
+            f"그리드({nx}×{ny}={nx * ny})가 포인트 수({n_points})보다 큽니다. "
+            f"nx·ny 를 줄이세요."
         )

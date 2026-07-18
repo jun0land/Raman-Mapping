@@ -7,6 +7,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from core import loader
 
@@ -59,3 +60,17 @@ def test_legacy_equipment_regression():
     data = loader.load_file(str(LEGACY_CSV))
     assert data.source_format == "equipment"
     assert data.spectra.shape == (400, 1024)
+
+
+def test_validate_grid_exact_and_leftover():
+    # 정확히 일치 → OK
+    loader.validate_grid(400, 20, 20)
+    # 그리드가 포인트보다 작음(초과 포인트는 호출부에서 잘라 씀) → OK
+    loader.validate_grid(400, 10, 10)   # 100 <= 400
+    loader.validate_grid(400, 19, 20)   # 380 <= 400
+
+
+def test_validate_grid_rejects_oversized():
+    # 그리드가 포인트 수보다 큼 → 값 부족이므로 에러
+    with pytest.raises(ValueError):
+        loader.validate_grid(100, 20, 20)   # 400 > 100

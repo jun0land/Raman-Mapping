@@ -802,19 +802,33 @@ with st.sidebar:
                           type=["xlsx", "xls", "csv", "txt", "tsv"],
                           key="uploader")
 
+    # ---- 파일 로드 (nx/ny 위젯 생성보다 먼저 — 메타 자동 그리드 세팅을 위해) ----
+    raman = None
+    load_error = None
+    if up is not None:
+        try:
+            raman = cached_load(up.getvalue(), up.name)
+        except Exception as e:  # 친절한 에러
+            load_error = str(e)
+        # 메타데이터 Map Width/Height → nx/ny 자동 세팅.
+        # XY 매핑만 다루므로 Map Depth 는 무시하고, z-stack 등으로 남는 포인트는
+        # 파이프라인에서 앞에서부터 nx*ny 개만 사용한다. 파일당 1회만 적용하여
+        # 이후 사용자가 입력칸에서 자유롭게 덮어쓸 수 있다.
+        if raman is not None and raman.map_width and raman.map_height:
+            _file_tag = f"{up.name}:{up.size}"
+            if st.session_state.get("_autogrid_file") != _file_tag:
+                _nx_m, _ny_m = int(raman.map_width), int(raman.map_height)
+                if _nx_m >= 1 and _ny_m >= 1 and _nx_m * _ny_m <= raman.n_points:
+                    st.session_state.nx = _nx_m
+                    st.session_state.ny = _ny_m
+                st.session_state["_autogrid_file"] = _file_tag
+
     st.markdown("**그리드 크기**")
+    st.caption("메타데이터에 Map Width/Height 가 있으면 자동 설정됩니다. "
+               "직접 수정도 가능합니다.")
     gc1, gc2 = st.columns(2)
     gc1.number_input("nx (열)", min_value=1, max_value=1000, step=1, key="nx")
     gc2.number_input("ny (행)", min_value=1, max_value=1000, step=1, key="ny")
-
-# ---- 파일 로드 (사이드바 이후 최상단에서 파이프라인 계산) ----
-raman = None
-load_error = None
-if up is not None:
-    try:
-        raman = cached_load(up.getvalue(), up.name)
-    except Exception as e:  # 친절한 에러
-        load_error = str(e)
 
 # ===========================================================================
 # 6. 타이틀 헤더
@@ -864,10 +878,13 @@ if raman is not None:
             mode, ex_params = build_extract_params()
             values = extract.extract_values(spectra_pp, raman.waves, mode, **ex_params)
             gcfg = build_grid_config()
-            gridarr = grid.apply_transform(values, nx, ny, gcfg)
+            # XY 매핑: 그리드는 메타(Map Width/Height) 기준. z-stack 등으로 남는
+            # 포인트는 취득 순서 앞에서부터 nx*ny 개만 사용한다.
+            use_n = nx * ny
+            gridarr = grid.apply_transform(values[:use_n], nx, ny, gcfg)
             # 클릭→원본 index 역추적용 index grid (같은 변환 적용)
             idx_grid = grid.apply_transform(
-                np.arange(raman.n_points, dtype=float), nx, ny, gcfg
+                np.arange(use_n, dtype=float), nx, ny, gcfg
             ).round().astype(int)
             pcfg = build_plot_config(gridarr)
             pipe.update(ok=True, grid=gridarr, pcfg=pcfg, values=values,
@@ -1186,9 +1203,11 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
             mode, ex_params = build_extract_params()
             values = extract.extract_values(spectra_pp, raman.waves, mode, **ex_params)
             gcfg = build_grid_config()
-            gridarr = grid.apply_transform(values, nx, ny, gcfg)
+            # 파이프라인과 동일: 앞에서부터 nx*ny 포인트만 사용 (초과분 무시)
+            use_n = nx * ny
+            gridarr = grid.apply_transform(values[:use_n], nx, ny, gcfg)
             idx_grid = grid.apply_transform(
-                np.arange(raman.n_points, dtype=float), nx, ny, gcfg
+                np.arange(use_n, dtype=float), nx, ny, gcfg
             ).round().astype(int)
         except Exception as e:
             grid_err = str(e)
@@ -1421,8 +1440,12 @@ with tab_map:
                 hint.append(f"Step X/Y={raman.step_x}/{raman.step_y}")
             if hint:
                 st.caption("메타 힌트: " + ", ".join(hint) +
-                           f" · 기본 그리드 {int(np.sqrt(raman.n_points))}×"
-                           f"{int(np.sqrt(raman.n_points))} 추천")
+                           " · Map Width/Height 는 그리드(nx·ny)에 자동 반영됩니다")
+            _use_n = int(st.session_state.nx) * int(st.session_state.ny)
+            if _use_n < raman.n_points:
+                st.caption(f"ℹ️ XY 매핑 기준 {raman.n_points}개 포인트 중 앞에서부터 "
+                           f"{_use_n}개를 사용합니다 (깊이 스택 등 초과분 "
+                           f"{raman.n_points - _use_n}개 제외).")
 
             if pipe.get("grid_mismatch"):
                 st.error(f"⚠️ {pipe['grid_mismatch']} — 사이드바에서 nx/ny를 조정하세요.")
@@ -1558,7 +1581,8 @@ with tab_batch:
                     loader.validate_grid(rd.n_points, nx, ny)
                     sp = preprocess.apply_preprocessing(rd.spectra, rd.waves, pp_cfg)
                     vals = extract.extract_values(sp, rd.waves, mode, **ex_params)
-                    garr = grid.apply_transform(vals, nx, ny, gcfg)
+                    # 메인 파이프라인과 동일: 앞에서부터 nx*ny 포인트만 사용
+                    garr = grid.apply_transform(vals[:nx * ny], nx, ny, gcfg)
                     pcfg = build_plot_config(garr)
                     stem = os.path.splitext(bf.name)[0]
                     zf.writestr(f"{stem}_2d.png",
