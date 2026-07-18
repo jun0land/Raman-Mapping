@@ -149,14 +149,23 @@ def init_state():
     for k, v in DEFAULTS.items():
         if k not in st.session_state:
             st.session_state[k] = v
-    # 1회성 세션 복구: 과거 위젯 상태 유실 버그로 폰트 크기가 min_value(6)로
-    # 떨어진 채 세션에 고착된 값을 기본값(30)으로 되돌린다. 마커를 남겨 세션당
-    # 한 번만 수행하므로, 이후 사용자가 의도적으로 6을 고르는 것은 존중된다.
-    if not st.session_state.get("_fs_repair_done"):
+    # 1회성 세션 마이그레이션: DEFAULTS 는 "키가 없을 때만" 시드되므로, 켜둔 탭의
+    # 세션에는 예전 기본값(Arial·6/14/12/16·"X (μm)" 계열)이 저장된 채 남는다.
+    # 그런 '예전 기본값 그대로'인 값만 새 기본값으로 치환한다. 마커로 세션당 1회만
+    # 수행하므로, 이후 사용자가 의도적으로 고른 값(Arial·6 포함)은 존중된다.
+    if st.session_state.get("_defaults_migration") != 2:
+        _legacy_fs = {6, 14, 12, 16}   # 6=버그 잔재, 14/12/16=예전 기본 크기
         for k in ("fmt_fs_label", "fmt_fs_tick", "fmt_fs_title"):
-            if st.session_state.get(k) == 6:
+            if st.session_state.get(k) in _legacy_fs:
                 st.session_state[k] = DEFAULTS[k]
-        st.session_state["_fs_repair_done"] = True
+        if st.session_state.get("fmt_font") == "Arial":
+            st.session_state["fmt_font"] = DEFAULTS["fmt_font"]
+        _legacy_texts = {"fmt_xlabel": "X (μm)", "fmt_ylabel": "Y (μm)",
+                         "fmt_cbarlabel": "Intensity (a.u.)"}
+        for k, old in _legacy_texts.items():
+            if st.session_state.get(k) == old:
+                st.session_state[k] = DEFAULTS[k]
+        st.session_state["_defaults_migration"] = 2
 
 
 # ===========================================================================
