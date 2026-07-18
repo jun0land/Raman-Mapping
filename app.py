@@ -114,14 +114,17 @@ DEFAULTS = {
     "op_rotate_cw": False, "op_rotate_ccw": False, "op_transpose": False,
     # 서식
     "fmt_cmap": "jet", "fmt_zmin": 0.0, "fmt_zmax": 1.0, "fmt_zauto": True,
-    "fmt_xlabel": "X (μm)", "fmt_ylabel": "Y (μm)", "fmt_title": "",
+    # 텍스트(제목·축·컬러바 라벨)는 처음부터 빈 값으로 시작한다 — 2D/3D 뷰를
+    # 오가도 "채워져 있다가 사라지는" 불일치가 없도록 일관되게 비워 둔다.
+    # 서식(폰트 Myriad Pro·크기 30)만 미리 세팅된 상태.
+    "fmt_xlabel": "", "fmt_ylabel": "", "fmt_title": "",
     # 3D 표면 Z축 라벨. 빈 값이면 Colorbar 라벨을 따른다.
     "fmt_zlabel": "",
     "fmt_title_pos": "center",
     "fmt_stepx": 1.0, "fmt_stepy": 1.0,
     "fmt_showticks": True, "fmt_tickspacing": 0.0,
-    "fmt_cbarlabel": "Intensity (a.u.)", "fmt_cbarticks": 5,
-    "fmt_font": "Arial", "fmt_fs_label": 30, "fmt_fs_tick": 30, "fmt_fs_title": 30,
+    "fmt_cbarlabel": "", "fmt_cbarticks": 5,
+    "fmt_font": "Myriad Pro", "fmt_fs_label": 30, "fmt_fs_tick": 30, "fmt_fs_title": 30,
     "fmt_bold_label": False, "fmt_italic_label": False, "fmt_color_label": "#000000",
     "fmt_bold_tick": False, "fmt_italic_tick": False, "fmt_color_tick": "#000000",
     "fmt_bold_title": False, "fmt_italic_title": False, "fmt_color_title": "#000000",
@@ -1258,14 +1261,14 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
                     st.number_input("z-min", key="fmt_zmin", format="%.4g")
                     st.number_input("z-max", key="fmt_zmax", format="%.4g")
             with f2:
-                st.text_input("X 축 라벨", key="fmt_xlabel")
-                st.text_input("Y 축 라벨", key="fmt_ylabel")
+                st.text_input("X 축 라벨", key="fmt_xlabel", placeholder="예: X (μm)")
+                st.text_input("Y 축 라벨", key="fmt_ylabel", placeholder="예: Y (μm)")
                 st.text_input("Z 축 라벨 (3D)", key="fmt_zlabel",
                               placeholder="비우면 Colorbar 라벨을 따름",
                               help="3D 표면의 Z축 라벨. 비워두면 Colorbar 라벨과 "
                                    "같은 값을 사용합니다.")
                 tt1, tt2 = st.columns([1.4, 1], vertical_alignment="bottom")
-                tt1.text_input("제목", key="fmt_title")
+                tt1.text_input("제목", key="fmt_title", placeholder="예: Raman Map")
                 tt2.selectbox("위치", ["left", "center", "right"],
                               key="fmt_title_pos",
                               format_func=lambda p: {"left": "왼쪽", "center": "가운데",
@@ -1276,7 +1279,8 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
                 st.number_input("Step Y (μm)", min_value=0.0001, step=0.1,
                                 key="fmt_stepy", format="%.4g")
             with f3:
-                st.text_input("Colorbar 라벨", key="fmt_cbarlabel")
+                st.text_input("Colorbar 라벨", key="fmt_cbarlabel",
+                              placeholder="예: Intensity (a.u.)")
                 st.number_input("Colorbar tick 개수", min_value=2, max_value=40,
                                 step=1, key="fmt_cbarticks")
                 st.caption("값을 높이면 colorbar·컨투어가 더 연속적으로 보입니다.")
