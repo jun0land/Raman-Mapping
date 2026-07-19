@@ -85,7 +85,7 @@ OP_LABELS = {
     "rotate_ccw": "반시계방향 90° 회전",
     "transpose": "전치 (transpose)",
 }
-FONTS = ["Arial", "Myriad Pro", "Times New Roman", "Pretendard", "Calibri",
+FONTS = ["Myriad Pro", "Arial", "Times New Roman", "Pretendard", "Calibri",
          "Helvetica", "Nanum Gothic"]
 
 # 데이터 정보(① 포맷 metric) 표시용 친화 라벨.
@@ -153,7 +153,8 @@ def init_state():
     # 세션에는 예전 기본값(Arial·6/14/12/16·"X (μm)" 계열)이 저장된 채 남는다.
     # 그런 '예전 기본값 그대로'인 값만 새 기본값으로 치환한다. 마커로 세션당 1회만
     # 수행하므로, 이후 사용자가 의도적으로 고른 값(Arial·6 포함)은 존중된다.
-    if st.session_state.get("_defaults_migration") != 2:
+    # 👇 2를 3으로 변경
+    if st.session_state.get("_defaults_migration") != 3:
         _legacy_fs = {6, 14, 12, 16}   # 6=버그 잔재, 14/12/16=예전 기본 크기
         for k in ("fmt_fs_label", "fmt_fs_tick", "fmt_fs_title"):
             if st.session_state.get(k) in _legacy_fs:
@@ -165,7 +166,8 @@ def init_state():
         for k, old in _legacy_texts.items():
             if st.session_state.get(k) == old:
                 st.session_state[k] = DEFAULTS[k]
-        st.session_state["_defaults_migration"] = 2
+        # 👇 여기도 2를 3으로 변경
+        st.session_state["_defaults_migration"] = 3
 
 
 # ===========================================================================
@@ -1346,8 +1348,10 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
                 ]:
                     _r = st.columns([1.0, 1.5, 0.9], vertical_alignment="center")
                     _r[0].markdown(f"**{_lbl}**")
-                    _r[1].number_input("크기", min_value=6, max_value=50, key=_sz,
-                                       label_visibility="collapsed")
+                    # 👇 min_value를 1로 낮추고, value를 30으로 명시하여 6으로 돌아가는 현상 원천 차단
+                    _r[1].number_input("크기", min_value=1, max_value=100, 
+                                    value=int(st.session_state.get(_sz, 30)), 
+                                    key=_sz, label_visibility="collapsed")
                     _r[2].color_picker("색", key=_col, label_visibility="collapsed")
                 st.checkbox("눈금 표시", key="fmt_showticks")
                 st.number_input("눈금 간격 (μm, 0=자동)", min_value=0.0, step=1.0,
