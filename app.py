@@ -836,19 +836,7 @@ with st.sidebar:
     st.markdown("#### ⚙️ 전역 설정")
     # 실행 중인 코드가 어느 커밋인지 화면에서 바로 확인하는 진단 스탬프.
     # (기본값이 반영 안 될 때 '스테일 서버 vs 코드 버그'를 즉시 구분할 수 있다)
-    try:
-        import subprocess
-        _build = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                                capture_output=True, text=True, timeout=3,
-                                cwd=str(APP_DIR)).stdout.strip() or "?"
-    except Exception:
-        _build = "?"
-    import sys as _sys
-    st.caption(f"build `{_build}` · py {_sys.version_info.major}."
-               f"{_sys.version_info.minor} · "
-               f"ss폰트={st.session_state.get('fmt_font', '∅')} "
-               f"{st.session_state.get('fmt_fs_label', '∅')}pt")
-
+    
     up = st.file_uploader("라만 매핑 파일 (.xlsx / .csv / .txt)",
                           type=["xlsx", "xls", "csv", "txt", "tsv"],
                           key="uploader")
