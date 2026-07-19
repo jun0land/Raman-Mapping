@@ -841,8 +841,11 @@ with st.sidebar:
                                 cwd=str(APP_DIR)).stdout.strip() or "?"
     except Exception:
         _build = "?"
-    st.caption(f"build `{_build}` · 기본 폰트 {DEFAULTS['fmt_font']} "
-               f"{DEFAULTS['fmt_fs_label']}pt")
+    import sys as _sys
+    st.caption(f"build `{_build}` · py {_sys.version_info.major}."
+               f"{_sys.version_info.minor} · "
+               f"ss폰트={st.session_state.get('fmt_font', '∅')} "
+               f"{st.session_state.get('fmt_fs_label', '∅')}pt")
 
     up = st.file_uploader("라만 매핑 파일 (.xlsx / .csv / .txt)",
                           type=["xlsx", "xls", "csv", "txt", "tsv"],
