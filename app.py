@@ -124,7 +124,7 @@ DEFAULTS = {
     "fmt_stepx": 1.0, "fmt_stepy": 1.0,
     "fmt_showticks": True, "fmt_tickspacing": 0.0,
     "fmt_cbarlabel": "", "fmt_cbarticks": 5,
-    "fmt_font": "Myriad Pro", "fmt_fs_label": 30, "fmt_fs_tick": 30, "fmt_fs_title": 30,
+    "fmt_font": "Myriad Pro", "fmt_fs_label": 30, "fmt_fs_tick": 16, "fmt_fs_title": 30,
     "fmt_bold_label": False, "fmt_italic_label": False, "fmt_color_label": "#000000",
     "fmt_bold_tick": False, "fmt_italic_tick": False, "fmt_color_tick": "#000000",
     "fmt_bold_title": False, "fmt_italic_title": False, "fmt_color_title": "#000000",
@@ -1383,8 +1383,15 @@ def render_visualization(raman, spectra_pp, nx, ny, wmin, wmax):
             if ss.fmt_fill == "등고선(contour)":
                 # go.Contour 는 클릭 포인트 이벤트가 불안정하므로 on_select 를 걸지 않고,
                 # 스펙트럼 QC 는 아래 X/Y 픽셀 입력(폴백)으로 처리한다.
+                # key 에 등고선 라인 표시 여부를 포함시켜, 체크박스를 토글할 때
+                # 같은 컴포넌트에 대한 부분 diff(Plotly.react)가 아니라 완전히
+                # 새로 마운트되게 한다. 트레이스 개수가 바뀌는 diff 업데이트는
+                # 이전 등고선 라인이 일부 지워지지 않고 남는 Plotly.js 잔상 버그가
+                # 있어, 라인 표시를 껐는데도 일부 등고선이 남아 보이는 원인이었다.
+                _contour_key = ("final_contour_lines" if ss.fmt_contour_lines
+                               else "final_contour_nolines")
                 st.plotly_chart(final_fig, use_container_width=True,
-                                key="final_contour")
+                                key=_contour_key)
                 st.caption("최종 컨투어 맵 — 스펙트럼 QC 는 아래 X/Y 픽셀 입력을 "
                            "사용하세요.")
             else:
