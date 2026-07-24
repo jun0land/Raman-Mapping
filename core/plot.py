@@ -338,6 +338,29 @@ def _axis_coords(n: int, step: float, origin: float) -> np.ndarray:
     return origin + np.arange(n, dtype=float) * float(step)
 
 
+def _pad_for_contour(
+    arr: np.ndarray, x_coords: np.ndarray, y_coords: np.ndarray,
+    step_x: float, step_y: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """등고선 라인 계산용으로 그리드 가장자리에 1픽셀 테두리를 복제 확장한다.
+
+    go.Contour/ax.contour는 등고선을 그리드 정점(픽셀 중심) 사이에서만 보간하므로
+    도메인이 [x_coords[0], x_coords[-1]]에서 끝난다. 반면 go.Heatmap·imshow 채움은
+    셀 경계(중심 ± step/2)까지 반 픽셀씩 더 뻗어 나간다. 두 도메인이 어긋나면
+    채움은 캔버스 테두리까지 닿는데 등고선 라인만 테두리 쪽 반 픽셀 폭만큼 비어
+    보이는 문제가 생긴다. 가장자리 값을 그대로 복제해 셀 경계 좌표까지 확장하면
+    등고선 계산 도메인이 채움 도메인과 일치해 테두리까지 라인이 그려진다.
+    """
+    padded_z = np.pad(arr, pad_width=1, mode="edge")
+    padded_x = np.concatenate((
+        [x_coords[0] - 0.5 * step_x], x_coords, [x_coords[-1] + 0.5 * step_x],
+    ))
+    padded_y = np.concatenate((
+        [y_coords[0] - 0.5 * step_y], y_coords, [y_coords[-1] + 0.5 * step_y],
+    ))
+    return padded_z, padded_x, padded_y
+
+
 def _tickvals(coords: np.ndarray, spacing: Optional[float]) -> Optional[list[float]]:
     """지정 간격(µm)에 맞춘 눈금 좌표 목록. spacing None이면 None(자동)."""
     if spacing is None or spacing <= 0 or coords.size == 0:
@@ -445,10 +468,12 @@ def make_heatmap(grid: np.ndarray, config: Optional[PlotConfig] = None) -> go.Fi
             colorbar=colorbar,
             hovertemplate="X=%{x}<br>Y=%{y}<br>z=%{z}<extra></extra>",
         )
+        padded_z, padded_x, padded_y = _pad_for_contour(
+            arr, x_coords, y_coords, cfg.step_x, cfg.step_y)
         contour_lines = go.Contour(
-            z=arr,
-            x=x_coords,
-            y=y_coords,
+            z=padded_z,
+            x=padded_x,
+            y=padded_y,
             zmin=zmin_eff,
             zmax=zmax_eff,
             contours_coloring="lines",
@@ -601,9 +626,11 @@ def make_matplotlib_heatmap(
             try:
                 xc = _axis_coords(nx, cfg.step_x, cfg.x0)
                 yc = _axis_coords(ny, cfg.step_y, cfg.y0)
-                X, Y = np.meshgrid(xc, yc)
+                padded_arr, padded_xc, padded_yc = _pad_for_contour(
+                    arr, xc, yc, cfg.step_x, cfg.step_y)
+                X, Y = np.meshgrid(padded_xc, padded_yc)
                 ax.contour(
-                    X, Y, arr,
+                    X, Y, padded_arr,
                     levels=12,
                     colors="k",
                     linewidths=0.4,
