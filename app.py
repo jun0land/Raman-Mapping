@@ -85,6 +85,10 @@ OP_LABELS = {
     "rotate_ccw": "반시계방향 90° 회전",
     "transpose": "전치 (transpose)",
 }
+# 'Pretendard'(static/fonts/, SIL OFL)는 앱에 번들되어 클라이언트·서버 설치 여부와
+# 무관하게 항상 동일하게 렌더된다. 'Myriad Pro'는 Adobe 상업 폰트라 재배포 라이선스가
+# 없어 번들하지 않았다 — 그 폰트가 실제로 설치된 클라이언트에서만 보이고, 그 외에는
+# core/plot.py 의 폴백 체인이 Pretendard 로 조용히 대체한다(목록엔 그대로 유지).
 FONTS = ["Myriad Pro", "Arial", "Times New Roman", "Pretendard", "Calibri",
          "Helvetica", "Nanum Gothic"]
 
@@ -200,7 +204,25 @@ _bg_layer = (
 
 custom_css = f"""
 <style>
-@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
+/* Pretendard(SIL OFL, 자유 재배포) 를 static/ 에서 자체 서빙 — CDN(jsdelivr) 의존을
+   없애 방화벽/오프라인 등 "어디서든" 동일하게 렌더된다. Plotly 차트 텍스트(SVG)도
+   페이지 레벨 @font-face 를 그대로 상속해 적용된다.
+   Myriad Pro 는 Adobe 상업 폰트라 재배포 라이선스가 없어 번들링하지 않는다 —
+   클라이언트에 실제 설치돼 있을 때만 쓰이고, 그 외엔 Pretendard 로 폴백된다. */
+@font-face {{
+    font-family: 'Pretendard';
+    src: url('{_STATIC}/fonts/Pretendard-Regular.woff2') format('woff2');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}}
+@font-face {{
+    font-family: 'Pretendard';
+    src: url('{_STATIC}/fonts/Pretendard-Bold.woff2') format('woff2');
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+}}
 
 html, body, [class*="css"], .stApp, button, input, textarea, select {{
     font-family: 'Myriad Pro', 'Pretendard', 'Nanum Gothic', -apple-system, sans-serif !important;

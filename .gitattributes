@@ -1,0 +1,9 @@
+# 바이너리 파일은 절대 CRLF 변환하지 않는다 (core.autocrlf=true 환경에서 손상 방지).
+*.otf   binary
+*.ttf   binary
+*.woff  binary
+*.woff2 binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.zip   binary

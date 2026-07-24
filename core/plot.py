@@ -16,12 +16,31 @@ from dataclasses import dataclass, field
 from math import cos, radians, sin
 from typing import Optional
 
+from pathlib import Path
+
 import numpy as np
 import plotly.graph_objects as go
 import matplotlib
 matplotlib.use("Agg")  # UI/디스플레이 백엔드 없이 figure만 생성
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+
+# ---------------------------------------------------------------------------
+# 번들 폰트 등록 (Pretendard, SIL OFL — 자유 재배포 가능)
+# ---------------------------------------------------------------------------
+# 클라이언트/배포 서버에 설치돼 있지 않아도 matplotlib export(PNG/SVG/PDF)에서
+# 항상 동일하게 렌더되도록, static/fonts/ 의 정적 폰트 파일을 폰트매니저에 등록한다.
+# (Myriad Pro 는 Adobe 상업 폰트라 재배포 라이선스가 없어 번들링하지 않는다 —
+#  클라이언트에 실제로 설치돼 있을 때만 시스템 폰트로 렌더되고, 그 외엔
+#  _mpl_font()의 폴백 체인으로 조용히 대체된다.)
+_FONT_DIR = Path(__file__).resolve().parent.parent / "static" / "fonts"
+for _f in ("Pretendard-Regular.otf", "Pretendard-Bold.otf"):
+    _p = _FONT_DIR / _f
+    if _p.exists():
+        try:
+            matplotlib.font_manager.fontManager.addfont(str(_p))
+        except Exception:
+            pass  # 폰트 등록 실패는 치명적이지 않음 — 폴백 체인이 처리
 
 __all__ = [
     "PlotConfig",
@@ -116,20 +135,32 @@ def _plotly_colorscale(name: str) -> list[list]:
 # 폰트 helper — 웹 세이프가 아닌 폰트(Myriad Pro 등)에 폴백 체인을 부여
 # ---------------------------------------------------------------------------
 def _plotly_font(name: Optional[str]) -> str:
-    """Plotly font.family 문자열(폴백 포함). Myriad Pro 등 비웹폰트도 우아히 폴백."""
+    """Plotly font.family 문자열(폴백 포함).
+
+    Pretendard 는 static/fonts 에 번들되어 @font-face 로 항상 로드되므로(app.py),
+    Myriad Pro 등 클라이언트에 없을 수 있는 폰트 다음 폴백으로 Arial 대신
+    Pretendard 를 먼저 넣는다 — 어떤 환경에서도 시스템 기본 sans-serif 가 아닌
+    일관된 모양으로 렌더된다.
+    """
     n = str(name or "").strip()
     if not n:
-        return "Arial, Helvetica, sans-serif"
+        return "Pretendard, Arial, Helvetica, sans-serif"
     if "," in n:  # 이미 폴백 체인이면 그대로
         return n
-    return f"{n}, Arial, Helvetica, sans-serif"
+    if n == "Pretendard":
+        return "Pretendard, Arial, Helvetica, sans-serif"
+    return f"{n}, Pretendard, Arial, Helvetica, sans-serif"
 
 
 def _mpl_font(name: Optional[str]) -> list[str]:
-    """Matplotlib fontfamily 폴백 리스트(설치 안 된 폰트도 예외 없이 폴백)."""
+    """Matplotlib fontfamily 폴백 리스트(설치 안 된 폰트도 예외 없이 폴백).
+
+    Pretendard 는 폰트매니저에 번들 등록되어(core/plot.py 상단) 항상 사용 가능하므로,
+    지정 폰트가 없거나 미설치일 때 시스템 sans-serif 대신 Pretendard 로 먼저 떨어진다.
+    """
     n = str(name or "").strip()
     fam = [n] if n else []
-    for fb in ("Arial", "DejaVu Sans", "sans-serif"):
+    for fb in ("Pretendard", "Arial", "DejaVu Sans", "sans-serif"):
         if fb not in fam:
             fam.append(fb)
     return fam
