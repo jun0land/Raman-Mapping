@@ -570,6 +570,22 @@ _MANUAL_HTML = r"""
     }, true);   // capture 단계
   } catch (e) { /* 무시 */ }
 })();
+
+// --- 탭 닫기/새로고침/뒤로가기 시 브라우저 기본 확인창 표시 ---
+// beforeunload 는 커스텀 문구를 지원하지 않는다(보안상 모든 최신 브라우저가 무시하고
+// 자체 고정 문구를 띄운다) — e.returnValue 를 설정하면 확인창이 뜨는 트리거만 된다.
+(function () {
+  try {
+    var pwin = window.parent;
+    if (pwin.__nbedlBeforeUnloadGuard) return;   // de-dup: 한 번만 부착
+    pwin.__nbedlBeforeUnloadGuard = true;
+    pwin.addEventListener('beforeunload', function (e) {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    });
+  } catch (e) { /* cross-origin 등: 조용히 무시 */ }
+})();
 </script>
 """
 
